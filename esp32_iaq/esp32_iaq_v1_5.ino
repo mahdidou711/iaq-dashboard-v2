@@ -38,6 +38,9 @@ const char* HEALTH_URL = "https://iaq-maison.onrender.com/api/health";
 const char* API_KEY    = "SECRET_IAQ_2026";
 const char* DEVICE_ID  = "esp32-test-v15";
 
+// ===================== Serveur (SON APP ANDROID) =====================
+const char* HER_SERVER_URL = "https://iaq-backend.onrender.com/api/mesures";
+
 WiFiClientSecure secureClient;
 
 // ===================== PINS (SON MONTAGE) =====================
@@ -318,7 +321,7 @@ void envoyerBuffer() {
   http.end();
 }
 
-// ===================== Envoi orchestré =====================
+// ===================== Envoi orchestré (MON serveur) =====================
 void envoyerMesures(int co2, float tvoc, float co, float temp, float hum) {
   char ts[20] = "";
   struct tm ti;
@@ -331,6 +334,35 @@ void envoyerMesures(int co2, float tvoc, float co, float temp, float hum) {
   }
   if (LittleFS.exists("/mesures.jsonl")) envoyerBuffer();
   envoyerUneMesure(co2, tvoc, co, temp, hum, ts);
+}
+
+// ===================== Envoi vers SON serveur (App Android) =====================
+void envoyerVersAppAndroid(int co2, int tvoc, float co, float temp, float hum, const String& etat_air) {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  HTTPClient http;
+  http.setTimeout(5000);
+  http.begin(secureClient, HER_SERVER_URL);
+  http.addHeader("Content-Type", "application/json");
+
+  String json = "{";
+  json += "\"co2\":" + String(co2) + ",";
+  json += "\"tvoc\":" + String(tvoc) + ",";
+  json += "\"co\":" + String(co, 1) + ",";
+  json += "\"temperature\":" + String(temp, 1) + ",";
+  json += "\"humidite\":" + String(hum, 1) + ",";
+  json += "\"fan\":" + String(fanState ? "true" : "false") + ",";
+  json += "\"buzzer\":" + String(buzzerState ? "true" : "false") + ",";
+  json += "\"etat_air\":\"" + etat_air + "\"";
+  json += "}";
+
+  int code = http.POST(json);
+  if (code > 0) {
+    Serial.printf("[APP] Envoi OK (%d)\n", code);
+  } else {
+    Serial.printf("[APP] Echec (%s)\n", http.errorToString(code).c_str());
+  }
+  http.end();
 }
 
 // ══════════════════════════════════════════════════════
@@ -486,15 +518,29 @@ void loop() {
 
   updateAlertState(anyHigh, allLow);
 
-  // --- Envoi vers MON serveur ---
+  // --- Envoi vers LES DEUX serveurs ---
   if (now - lastSend >= SEND_MS) {
     lastSend = now;
+
+    String etat_air = (anyHigh ? "Air danger" : "Air normal");
+
+    // 1) MON serveur (iaq-maison) avec API Key + LittleFS
     envoyerMesures(
       co2Valid ? co2 : -9999,
       tvoc,
       coValid ? co_ppm : NAN,
       tempValid ? temp : NAN,
       humValid ? hum : NAN
+    );
+
+    // 2) SON serveur (iaq-backend) pour son App Android
+    envoyerVersAppAndroid(
+      co2Valid ? co2 : -1,
+      tvocValid ? (int)tvoc : -1,
+      coValid ? co_ppm : -1.0,
+      tempValid ? temp : -1.0,
+      humValid ? hum : -1.0,
+      etat_air
     );
   }
 
