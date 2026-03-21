@@ -33,8 +33,8 @@ const char* WIFI_SSID     = "REDACTED_WIFI_SSID_B";
 const char* WIFI_PASSWORD = "REDACTED_WIFI_PASSWORD_B";
 
 // ===================== Serveur (MON DASHBOARD) =====================
-const char* SERVER_URL = "https://iaq-dashboard-v2.onrender.com/api/mesures";   // <-- MON URL Render
-const char* HEALTH_URL = "https://iaq-dashboard-v2.onrender.com/api/health";
+const char* SERVER_URL = "https://iaq-maison.onrender.com/api/mesures";
+const char* HEALTH_URL = "https://iaq-maison.onrender.com/api/health";
 const char* API_KEY    = "REDACTED_OLD_API_KEY";
 const char* DEVICE_ID  = "esp32-test-v15";
 
