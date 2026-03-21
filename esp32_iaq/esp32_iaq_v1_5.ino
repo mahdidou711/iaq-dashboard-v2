@@ -234,7 +234,7 @@ void envoyerUneMesure(int co2, float tvoc, float co, float temp, float hum, cons
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-API-KEY", API_KEY);
 
-  JsonDocument doc;
+  StaticJsonDocument<512> doc;
   doc["device_id"] = DEVICE_ID;
   if (co2 >= 0)     doc["co2"]         = co2;
   if (!isnan(tvoc))  doc["tvoc"]        = (int)tvoc;
@@ -265,7 +265,7 @@ void ajouterAuBuffer(int co2, float tvoc, float co, float temp, float hum, const
     file = LittleFS.open("/mesures.jsonl", FILE_APPEND);
   }
 
-  JsonDocument doc;
+  StaticJsonDocument<512> doc;
   if (co2 >= 0)     doc["co2"]         = co2;
   if (!isnan(tvoc))  doc["tvoc"]        = (int)tvoc;
   if (!isnan(co))    doc["co"]          = co;
@@ -288,7 +288,7 @@ void envoyerBuffer() {
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-API-KEY", API_KEY);
 
-  JsonDocument doc;
+  StaticJsonDocument<512> doc;
   JsonArray arr = doc.to<JsonArray>();
   int n = 0;
 
@@ -296,7 +296,7 @@ void envoyerBuffer() {
     String line = file.readStringUntil('\n');
     line.trim();
     if (line.length() > 0) {
-      JsonDocument ld;
+      StaticJsonDocument<256> ld;
       if (deserializeJson(ld, line) == DeserializationError::Ok) {
         ld["device_id"] = DEVICE_ID;
         arr.add(ld);
