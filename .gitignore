@@ -1,7 +1,15 @@
 __pycache__/
+*.pyc
 *.db
 venv/
 .env
-.DS_Store
+*.log
+.vscode/
+
+# Documentation locale (pas sur GitHub)
+Guide_IAQ.pdf
+guide-header.tex
+project_audit.md
+roadmap_implementation.md
 *.sqlite
 *.sqlite3
