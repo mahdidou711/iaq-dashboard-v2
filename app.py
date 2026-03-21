@@ -39,7 +39,7 @@ limiter = Limiter(
 # ─── Configuration (modifie directement ici) ─────────────────────────────────
 DATABASE = os.environ.get("DB_PATH", "iaq.db") # Utilise le disque Render s'il existe, sinon local
 API_KEY = "SECRET_IAQ_2026"        # Clé secrète d'authentification
-DEBUG = True                       # True = active /api/seed + logs détaillés
+DEBUG = False                       # True = active /api/seed + logs détaillés
 DATA_RETENTION_DAYS = 30           # Jours avant suppression des vieilles données
 SENSOR_OFFLINE_MINUTES = 5         # Minutes sans données → "capteur hors ligne"
 

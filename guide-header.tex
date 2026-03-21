@@ -37,9 +37,9 @@
 % ── Headers/footers ──
 \pagestyle{fancy}
 \fancyhf{}
-\fancyhead[L]{\small\color{muted}Guide IAQ — Surveillance qualité de l'air}
+\fancyhead[L]{\small\color{muted}Guide IAQ V2 — Surveillance qualité de l'air}
 \fancyhead[R]{\small\color{muted}\thepage}
-\fancyfoot[C]{\small\color{muted}Testé et validé sans ESP32 — Mars 2026}
+\fancyfoot[C]{\small\color{muted}Version 2 — Mars 2026 — MH-Z19 / ADS1115 / Render}
 \renewcommand{\headrulewidth}{0.4pt}
 \renewcommand{\footrulewidth}{0.2pt}
 
@@ -76,6 +76,10 @@
 
     {\fontsize{32}{38}\selectfont\bfseries\color{primary}Tableau de bord IAQ}
 
+    \vspace{0.3cm}
+
+    {\fontsize{18}{22}\selectfont\bfseries\color{accent}VERSION 2}
+
     \vspace{0.4cm}
 
     {\fontsize{16}{20}\selectfont\color{white}Surveillance de la qualité\\ de l'air intérieur}
@@ -88,19 +92,23 @@
 
     \vspace{1.5cm}
 
-    {\large\color{accent}ESP32 + Flask + Chart.js}
+    {\large\color{accent}ESP32 + Flask + Chart.js + Render Cloud}
 
     \vspace{0.6cm}
+
+    {\color{muted}MH-Z19 \quad CCS811 \quad MQ-7 (ADS1115) \quad DHT22}
+
+    \vspace{0.3cm}
 
     {\color{muted}CO\textsubscript{2} \quad TVOC \quad CO \quad Température \quad Humidité}
 
     \vspace{3cm}
 
-    {\color{muted}\small Testé et validé sans ESP32 — Mars 2026}
+    {\color{muted}\small Version 2 — Mars 2026}
 
     \vspace{0.3cm}
 
-    {\color{muted}\small Installation pas à pas, code Arduino inclus}
+    {\color{muted}\small HTTPS · OTA · LittleFS · Email Gmail · Render}
 
   \end{titlepage}
 }
