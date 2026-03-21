@@ -14,7 +14,8 @@
 
 // --- INCLUSION DES BIBLIOTHÈQUES (Des plugins magiques rajoutés à la carte mère) ---
 #include <WiFi.h>              // Permet à l'antenne ESP32 d'activer le WiFi
-#include <HTTPClient.h>        // Permet d'envoyer les textos (données) à Windows 11
+#include <WiFiClientSecure.h>  // Permet les connexions HTTPS (chiffrées) vers le Cloud
+#include <HTTPClient.h>        // Permet d'envoyer les textos (données) au serveur
 #include <ArduinoJson.h>       // Change la donnée pure en version "Site Web Lisible" (le modèle JSON)
 #include <Adafruit_CCS811.h>   // Plugin du Capteur noir de l'air de la marque Adafruit (TVOC)
 #include <Adafruit_ADS1X15.h>  // Convertisseur analogique ultra precis pour MQ-7
@@ -38,6 +39,7 @@ const char* HEALTH_URL = "http://192.168.1.100:5000/api/health";
 const char* API_KEY    = "SECRET_IAQ_2026";  // Clé d'authentification serveur
 
 const char* DEVICE_ID = "esp32-salon"; // Comment s'appellera l'objet sur le graphique ?
+WiFiClientSecure secureClient;  // Client HTTPS sécurisé pour Render
 
 const unsigned long SEND_INTERVAL_MS = 10000;  // Rythme Chrono de 10 secondes entre envoies
 
@@ -103,6 +105,7 @@ void setup() {
   if (LED_ALERT_PIN >= 0) { pinMode(LED_ALERT_PIN, OUTPUT); digitalWrite(LED_ALERT_PIN, LOW); }
 
   connecterWiFi();  // Actionne la fente secrete vers le bas
+  secureClient.setInsecure(); // Désactive la vérif de certificat (suffisant pour Render)
   
   // --------- CONFIGURATION OTA ---------
   ArduinoOTA.setHostname(DEVICE_ID);   // Nom dans votre IDE Arduino
@@ -312,7 +315,7 @@ void envoyerMesures(float co2, float tvoc, float co, float temp, float hum) {
 bool verifierServeur() {
   HTTPClient http;
   http.setTimeout(3000);  
-  http.begin(HEALTH_URL);
+  http.begin(secureClient, HEALTH_URL);
   int code = http.GET();
   if (code != 200) {
     Serial.printf("[HTTP] Serveur injoignable (Erreur %d: %s)\n", code, http.errorToString(code).c_str());
@@ -324,8 +327,8 @@ bool verifierServeur() {
 // Poste final Windows
 void envoyerUneMesure(float co2, float tvoc, float co, float temp, float hum, const char* ts) {
   HTTPClient http;
-  http.setTimeout(5000);  // Un temps mort assez long (5 sec pour windows pc)
-  http.begin(SERVER_URL);
+  http.setTimeout(5000);  // Un temps mort assez long (5 sec)
+  http.begin(secureClient, SERVER_URL);
   http.addHeader("Content-Type", "application/json"); // Langue Windows : Bonjour Web Site.
   http.addHeader("X-API-KEY", API_KEY);               // Prouver l'identité de l'ESP32
 
@@ -384,8 +387,8 @@ void envoyerBuffer() {
   }
 
   HTTPClient http;
-  http.setTimeout(10000);  // 10 sec en dur limite (Très très large paquet pour PC en une ligne)
-  http.begin(SERVER_URL);
+  http.setTimeout(10000);  // 10 sec en dur limite (Très très large paquet)
+  http.begin(secureClient, SERVER_URL);
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-API-KEY", API_KEY);
 
