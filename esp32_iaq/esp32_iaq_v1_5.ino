@@ -1,7 +1,7 @@
 /*
  * ============================================================
  *  PROJET ESP32 : CAPTEUR DE QUALITÉ DE L'AIR INTÉRIEUR (IAQ)
- *  VERSION 1.5 — FUSION "SON MONTAGE + MES FONCTIONS"
+ *  VERSION 1.5 - FUSION "SON MONTAGE + MES FONCTIONS"
  * ============================================================
  *  Ce firmware combine :
  *  - Le montage physique de [SA copine] (pins, I2C, auto-calibration)
@@ -70,7 +70,7 @@ DHT dht(DHT_PIN, DHT_TYPE);
 static const float CO_ON     = 25.0f;   static const float CO_OFF     = 18.0f;   // ppm
 static const int   CO2_ON    = 2000;     static const int   CO2_OFF    = 1800;     // ppm
 static const float TVOC_ON   = 220.0f;   static const float TVOC_OFF   = 150.0f;   // ppb
-static const float TEMP_ON   = 27.0f;    static const float TEMP_OFF   = 25.0f;    // °C
+static const float TEMP_ON   = 27.0f;    static const float TEMP_OFF   = 25.0f;    // C
 static const float HUM_ON    = 60.0f;    static const float HUM_OFF    = 55.0f;    // %
 
 // ===================== Timings =====================
@@ -365,9 +365,9 @@ void envoyerVersAppAndroid(int co2, int tvoc, float co, float temp, float hum, c
   http.end();
 }
 
-// ══════════════════════════════════════════════════════
+// ======================================================
 //  SETUP
-// ══════════════════════════════════════════════════════
+// ======================================================
 void setup() {
   Serial.begin(115200);
   delay(300);
@@ -437,14 +437,14 @@ void setup() {
   bootTime = millis();
   Serial.println("[MQ-7] Calibration auto R0 pendant 60s...");
 
-  Serial.println("══════════════════════════════════");
-  Serial.println("   IAQ V1.5 — PRET !");
-  Serial.println("══════════════════════════════════");
+  Serial.println("======================================");
+  Serial.println("   IAQ V1.5 - PRET !");
+  Serial.println("======================================");
 }
 
-// ══════════════════════════════════════════════════════
+// ======================================================
 //  LOOP
-// ══════════════════════════════════════════════════════
+// ======================================================
 void loop() {
   esp_task_wdt_reset();
   ArduinoOTA.handle();
