@@ -346,6 +346,7 @@ def _insert_batch(data_list):
             (ts, cleaned["co2"], cleaned["tvoc"], cleaned["co"],
              cleaned["temperature"], cleaned["humidite"]),
         )
+        verifier_alertes(cleaned, ts)
         inserted += 1
 
     db.commit()
