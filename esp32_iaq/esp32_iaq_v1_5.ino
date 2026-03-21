@@ -33,8 +33,8 @@ const char* WIFI_SSID     = "IdoomFibre_AT3P2evDS_EXT";
 const char* WIFI_PASSWORD = "zevwhF9e";
 
 // ===================== Serveur (MON DASHBOARD) =====================
-const char* SERVER_URL = "https://iaq-dashboard-v2.onrender.com/api/mesures";   // <-- MON URL Render
-const char* HEALTH_URL = "https://iaq-dashboard-v2.onrender.com/api/health";
+const char* SERVER_URL = "https://iaq-maison.onrender.com/api/mesures";
+const char* HEALTH_URL = "https://iaq-maison.onrender.com/api/health";
 const char* API_KEY    = "SECRET_IAQ_2026";
 const char* DEVICE_ID  = "esp32-test-v15";
 
