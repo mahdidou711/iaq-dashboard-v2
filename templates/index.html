@@ -1,0 +1,819 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>IAQ — Qualité de l'air</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230d1117'/><text x='16' y='22' text-anchor='middle' font-size='14' font-family='monospace' fill='%2358a6ff'>IAQ</text></svg>">
+
+  <script src="{{ url_for('static', filename='js/chart.umd.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/chartjs-adapter-date-fns.bundle.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/hammer.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/chartjs-plugin-zoom.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/chartjs-plugin-annotation.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
+
+  <style>
+    /* ─── Dark theme (default) ─── */
+    :root {
+      --bg: #0d1117; --surface: #161b22; --border: #30363d;
+      --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
+      --grid: #21262d; --tooltip-bg: #161b22; --tooltip-border: #30363d; --tooltip-body: #e6edf3;
+      --clr-co2: #f85149; --clr-tvoc: #d29922; --clr-co: #bc8cff;
+      --clr-temp: #3fb950; --clr-hum: #58a6ff;
+    }
+
+    /* ─── Light theme ─── */
+    [data-theme="light"] {
+      --bg: #ffffff; --surface: #f6f8fa; --border: #d0d7de;
+      --text: #1f2328; --muted: #656d76; --accent: #0969da;
+      --grid: #e1e4e8; --tooltip-bg: #ffffff; --tooltip-border: #d0d7de; --tooltip-body: #1f2328;
+      --clr-co2: #cf222e; --clr-tvoc: #9a6700; --clr-co: #8250df;
+      --clr-temp: #1a7f37; --clr-hum: #0969da;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: 'Courier New', monospace; min-height: 100vh; transition: background 0.3s, color 0.3s; }
+
+    /* Header */
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0.8rem 1.5rem; border-bottom: 1px solid var(--border);
+      background: var(--surface); position: sticky; top: 0; z-index: 10;
+      flex-wrap: wrap; gap: 0.5rem;
+    }
+    header h1 { font-size: 0.9rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); }
+    .header-right { display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap; }
+    #last-update { font-size: 0.7rem; color: var(--muted); }
+    #sensor-status {
+      font-size: 0.65rem; letter-spacing: 0.06em; padding: 0.2rem 0.5rem;
+      border-radius: 4px; font-weight: 600;
+    }
+    #sensor-status.online { background: rgba(63,185,80,0.15); color: #3fb950; border: 1px solid rgba(63,185,80,0.3); }
+    #sensor-status.offline {
+      background: rgba(248,81,73,0.15); color: #f85149; border: 1px solid rgba(248,81,73,0.3);
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+
+    /* Nav links */
+    .nav-links { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+    .nav-links a, .nav-links button {
+      color: var(--muted); text-decoration: none; font-size: 0.7rem;
+      padding: 0.2rem 0.5rem; border: 1px solid var(--border); border-radius: 4px;
+      transition: all 0.2s; background: transparent; cursor: pointer;
+      font-family: inherit; letter-spacing: 0.03em;
+    }
+    .nav-links a:hover, .nav-links button:hover { color: var(--accent); border-color: var(--accent); }
+    .nav-links .btn-danger { color: #f85149; }
+    .nav-links .btn-danger:hover { border-color: #f85149; background: rgba(248,81,73,0.1); }
+
+    /* Tabs */
+    .tabs {
+      display: flex; gap: 0; border-bottom: 1px solid var(--border);
+      background: var(--surface); padding: 0 1.5rem;
+    }
+    .tab {
+      padding: 0.7rem 1.2rem; font-size: 0.75rem; letter-spacing: 0.08em;
+      text-transform: uppercase; cursor: pointer; color: var(--muted);
+      border-bottom: 2px solid transparent; transition: all 0.2s;
+      font-family: inherit; background: none; border-top: none; border-left: none; border-right: none;
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    /* Main grid */
+    main {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 1.1rem;
+      padding: 1.2rem 1.5rem; max-width: 1400px; margin: 0 auto;
+    }
+    .card-full { grid-column: 1 / -1; }
+
+    /* Cards */
+    .card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; overflow: hidden; display: flex; flex-direction: column;
+    }
+    .card-header {
+      display: flex; align-items: center; gap: 0.5rem;
+      padding: 0.55rem 0.9rem; border-bottom: 1px solid var(--border);
+    }
+    .card-header .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+    .card-header h2 { font-size: 0.73rem; letter-spacing: 0.1em; text-transform: uppercase; font-weight: 600; }
+    .card-header .unit { font-size: 0.6rem; color: var(--muted); margin-left: auto; letter-spacing: 0.06em; }
+    .card-header .live-val { font-size: 0.8rem; font-weight: 700; margin-left: auto; }
+    .card-body { padding: 0.8rem; flex: 1; position: relative; height: 200px; }
+    .card-body canvas { width: 100% !important; height: 100% !important; }
+
+    /* Status bar */
+    #status-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+      padding: 0.8rem 1.2rem; display: flex; flex-wrap: wrap; gap: 1.2rem;
+      align-items: center; grid-column: 1 / -1;
+    }
+    #status-card h2 { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); flex-basis: 100%; margin-bottom: 0.15rem; }
+    .status-item { display: flex; flex-direction: column; gap: 0.15rem; }
+    .status-label { font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+    .status-value { font-size: 0.9rem; font-weight: 700; }
+    .st-ok { color: #3fb950; } .st-warn { color: #d29922; } .st-alert { color: #f85149; } .st-off { color: var(--muted); }
+
+    /* Date filter bar */
+    .filter-bar {
+      grid-column: 1 / -1; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; padding: 0.7rem 1.2rem; display: flex; align-items: center;
+      gap: 0.8rem; flex-wrap: wrap;
+    }
+    .filter-bar label { font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
+    .filter-bar input[type="date"], .filter-bar input[type="number"] {
+      background: var(--bg); border: 1px solid var(--border); color: var(--text);
+      padding: 0.3rem 0.5rem; border-radius: 4px; font-family: inherit; font-size: 0.75rem;
+    }
+    .filter-bar button, .btn {
+      background: var(--accent); color: #fff; border: none; padding: 0.35rem 0.8rem;
+      border-radius: 4px; font-family: inherit; font-size: 0.7rem; cursor: pointer;
+      font-weight: 600; letter-spacing: 0.05em;
+    }
+    .filter-bar button:hover, .btn:hover { opacity: 0.85; }
+    .btn-outline {
+      background: transparent; border: 1px solid var(--border); color: var(--muted);
+    }
+    .btn-outline:hover { border-color: var(--accent); color: var(--accent); }
+    .filter-bar .spacer { flex: 1; }
+
+    /* Stats panel */
+    .stats-grid {
+      grid-column: 1 / -1; display: grid; grid-template-columns: repeat(5, 1fr);
+      gap: 0.8rem;
+    }
+    .stat-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+      padding: 0.8rem; text-align: center;
+    }
+    .stat-card h3 { font-size: 0.65rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.5rem; }
+    .stat-row { display: flex; justify-content: space-between; font-size: 0.7rem; margin: 0.25rem 0; }
+    .stat-row .label { color: var(--muted); }
+    .stat-row .val { font-weight: 600; }
+    .stat-chart-wrap { height: 100px; margin-top: 0.5rem; }
+
+    /* Alert history */
+    .alert-list { grid-column: 1 / -1; }
+    .alert-item {
+      display: flex; align-items: center; gap: 0.8rem; padding: 0.6rem 1rem;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 4px;
+      margin-bottom: 0.4rem; font-size: 0.75rem;
+    }
+    .alert-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .alert-dot.warn { background: #d29922; }
+    .alert-dot.alert { background: #f85149; }
+    .alert-time { color: var(--muted); font-size: 0.65rem; min-width: 130px; }
+    .alert-msg { flex: 1; }
+    .alert-empty { color: var(--muted); text-align: center; padding: 2rem; font-size: 0.8rem; }
+
+    /* Badge */
+    .badge {
+      display: none; background: #f85149; color: #fff; font-size: 0.55rem;
+      padding: 0.1rem 0.35rem; border-radius: 8px; margin-left: 0.3rem;
+      font-weight: 700; vertical-align: middle; min-width: 1.1em; text-align: center;
+    }
+
+    /* Loader */
+    #loader {
+      position: fixed; inset: 0; background: var(--bg); display: flex;
+      align-items: center; justify-content: center; z-index: 100;
+      font-size: 0.8rem; letter-spacing: 0.2em; color: var(--muted);
+    }
+    #loader.hidden { display: none; }
+
+    /* Responsive */
+    @media (max-width: 700px) {
+      main { grid-template-columns: 1fr; padding: 0.8rem; }
+      .card-full { grid-column: 1; }
+      .stats-grid { grid-template-columns: repeat(2, 1fr); }
+      .filter-bar { flex-direction: column; align-items: stretch; }
+      .tabs { overflow-x: auto; }
+    }
+  </style>
+</head>
+<body>
+
+<div id="loader">CHARGEMENT...</div>
+
+<header>
+  <h1>IAQ — Qualité de l'air</h1>
+  <div class="header-right">
+    <div class="nav-links">
+      <a href="/infos">Comprendre les capteurs</a>
+      <a href="#" id="btn-export-csv">Export CSV</a>
+      {% if debug %}
+      <button id="btn-seed">Donnees test</button>
+      {% endif %}
+      <button id="btn-clear" class="btn-danger">Vider la base</button>
+      <button id="btn-theme" title="Changer le theme">&#x263E;</button>
+    </div>
+    <span id="sensor-status" class="offline">HORS LIGNE</span>
+    <span id="last-update">--</span>
+  </div>
+</header>
+
+<!-- Tabs -->
+<div class="tabs">
+  <button class="tab active" data-tab="tab-dashboard">Tableau de bord</button>
+  <button class="tab" data-tab="tab-stats">Statistiques</button>
+  <button class="tab" data-tab="tab-alertes">Historique alertes<span class="badge" id="alert-badge"></span></button>
+</div>
+
+<!-- ═══════════════ TAB: DASHBOARD ═══════════════ -->
+<div id="tab-dashboard" class="tab-content active">
+<main>
+  <!-- Date filter -->
+  <div class="filter-bar">
+    <label>Du</label>
+    <input type="date" id="filter-from">
+    <label>Au</label>
+    <input type="date" id="filter-to">
+    <button id="btn-filter">Filtrer</button>
+    <button id="btn-dash-24h" class="btn-outline">24h</button>
+    <button id="btn-dash-7d" class="btn-outline">7 jours</button>
+    <button id="btn-dash-30d" class="btn-outline">30 jours</button>
+    <button id="btn-reset" class="btn-outline">Reinitialiser</button>
+    <button id="btn-reset-zoom" class="btn-outline">Reset zoom</button>
+    <span class="spacer"></span>
+    <label style="font-size:0.65rem">Nb points</label>
+    <input type="number" id="filter-n" value="2880" min="10" max="50000" style="width:60px">
+  </div>
+
+  <!-- Status -->
+  <div id="status-card">
+    <h2>Etat systeme</h2>
+    <div class="status-item"><span class="status-label">Qualite globale</span><span class="status-value st-ok" id="st-global">--</span></div>
+    <div class="status-item"><span class="status-label">CO2</span><span class="status-value" id="st-co2">--</span></div>
+    <div class="status-item"><span class="status-label">TVOC</span><span class="status-value" id="st-tvoc">--</span></div>
+    <div class="status-item"><span class="status-label">CO</span><span class="status-value" id="st-co">--</span></div>
+    <div class="status-item"><span class="status-label">Temperature</span><span class="status-value" id="st-temp">--</span></div>
+    <div class="status-item"><span class="status-label">Humidite</span><span class="status-value" id="st-hum">--</span></div>
+  </div>
+
+  <!-- Charts -->
+  <div class="card card-full">
+    <div class="card-header">
+      <span class="dot" style="background:var(--clr-co2)"></span><h2>CO2</h2>
+      <span class="unit">ppm</span><span class="live-val" id="lv-co2" style="color:var(--clr-co2)">--</span>
+    </div>
+    <div class="card-body"><canvas id="chart-co2"></canvas></div>
+  </div>
+  <div class="card">
+    <div class="card-header">
+      <span class="dot" style="background:var(--clr-tvoc)"></span><h2>TVOC</h2>
+      <span class="unit">ppb</span><span class="live-val" id="lv-tvoc" style="color:var(--clr-tvoc)">--</span>
+    </div>
+    <div class="card-body"><canvas id="chart-tvoc"></canvas></div>
+  </div>
+  <div class="card">
+    <div class="card-header">
+      <span class="dot" style="background:var(--clr-co)"></span><h2>CO</h2>
+      <span class="unit">ppm</span><span class="live-val" id="lv-co" style="color:var(--clr-co)">--</span>
+    </div>
+    <div class="card-body"><canvas id="chart-co"></canvas></div>
+  </div>
+  <div class="card">
+    <div class="card-header">
+      <span class="dot" style="background:var(--clr-temp)"></span><h2>Temperature</h2>
+      <span class="unit">°C</span><span class="live-val" id="lv-temp" style="color:var(--clr-temp)">--</span>
+    </div>
+    <div class="card-body"><canvas id="chart-temp"></canvas></div>
+  </div>
+  <div class="card">
+    <div class="card-header">
+      <span class="dot" style="background:var(--clr-hum)"></span><h2>Humidite</h2>
+      <span class="unit">%</span><span class="live-val" id="lv-hum" style="color:var(--clr-hum)">--</span>
+    </div>
+    <div class="card-body"><canvas id="chart-hum"></canvas></div>
+  </div>
+</main>
+</div>
+
+<!-- ═══════════════ TAB: STATS ═══════════════ -->
+<div id="tab-stats" class="tab-content">
+<main>
+  <div class="filter-bar">
+    <label>Du</label><input type="date" id="stats-from">
+    <label>Au</label><input type="date" id="stats-to">
+    <button id="btn-stats">Calculer</button>
+    <button id="btn-stats-24h" class="btn-outline">24h</button>
+    <button id="btn-stats-7d" class="btn-outline">7 jours</button>
+    <button id="btn-stats-30d" class="btn-outline">30 jours</button>
+  </div>
+  <div class="stats-grid" id="stats-grid"></div>
+  <div id="stats-total" style="grid-column:1/-1;text-align:center;color:var(--muted);font-size:0.75rem;padding:0.5rem"></div>
+</main>
+</div>
+
+<!-- ═══════════════ TAB: ALERTES ═══════════════ -->
+<div id="tab-alertes" class="tab-content">
+<main>
+  <div class="filter-bar">
+    <label>Du</label><input type="date" id="alert-from">
+    <label>Au</label><input type="date" id="alert-to">
+    <select id="alert-niveau" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.3rem 0.5rem;border-radius:4px;font-family:inherit;font-size:0.7rem">
+      <option value="">Tous niveaux</option>
+      <option value="warn">Attention</option>
+      <option value="alert">Alerte</option>
+    </select>
+    <select id="alert-capteur" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:0.3rem 0.5rem;border-radius:4px;font-family:inherit;font-size:0.7rem">
+      <option value="">Tous capteurs</option>
+      <option value="co2">CO2</option>
+      <option value="tvoc">TVOC</option>
+      <option value="co">CO</option>
+      <option value="temperature">Temperature</option>
+      <option value="humidite">Humidite</option>
+    </select>
+    <button id="btn-alertes">Filtrer</button>
+  </div>
+  <div class="alert-list" id="alert-list"></div>
+</main>
+</div>
+
+<div id="py-config" style="display:none;"
+     data-thresholds='{{ thresholds | tojson | safe }}'
+     data-offline-minutes='{{ offline_minutes }}'
+     data-labels='{{ sensor_labels | tojson | safe }}'
+     data-debug='{{ debug }}'>
+</div>
+<script>
+/* ═══ Config from Flask ═══ */
+const configEl = document.getElementById('py-config');
+const THRESHOLDS = JSON.parse(configEl.dataset.thresholds);
+const OFFLINE_MINUTES = parseInt(configEl.dataset.offlineMinutes, 10);
+const LABELS = JSON.parse(configEl.dataset.labels);
+const UNITS = { co2:'ppm', tvoc:'ppb', co:'ppm', temperature:'°C', humidite:'%' };
+
+/* ═══ Theme ═══ */
+const THEME_COLORS = {
+  dark:  { grid:'#21262d', text:'#8b949e', ttBg:'#161b22', ttBorder:'#30363d', ttBody:'#e6edf3',
+           co2:'#f85149', tvoc:'#d29922', co:'#bc8cff', temperature:'#3fb950', humidite:'#58a6ff' },
+  light: { grid:'#e1e4e8', text:'#656d76', ttBg:'#ffffff', ttBorder:'#d0d7de', ttBody:'#1f2328',
+           co2:'#cf222e', tvoc:'#9a6700', co:'#8250df', temperature:'#1a7f37', humidite:'#0969da' }
+};
+
+let currentTheme = localStorage.getItem('iaq-theme') || 'dark';
+// Apply CSS theme immediately (charts updated later after init)
+document.documentElement.setAttribute('data-theme', currentTheme);
+document.getElementById('btn-theme').innerHTML = currentTheme === 'dark' ? '&#x2600;' : '&#x263E;';
+
+function applyTheme(theme) {
+  currentTheme = theme;
+  document.documentElement.setAttribute('data-theme', theme);
+  localStorage.setItem('iaq-theme', theme);
+  document.getElementById('btn-theme').innerHTML = theme === 'dark' ? '&#x2600;' : '&#x263E;';
+
+  const tc = THEME_COLORS[theme];
+  Chart.defaults.color = tc.text;
+
+  // Update existing charts
+  Object.keys(CHARTS).forEach(key => {
+    const chart = CHARTS[key];
+    if (!chart) return;
+    const color = tc[key];
+    chart.data.datasets[0].borderColor = color;
+    chart.data.datasets[0].backgroundColor = color + '18';
+    chart.data.datasets[0].pointBackgroundColor = color;
+    chart.options.scales.x.grid.color = tc.grid;
+    chart.options.scales.y.grid.color = tc.grid;
+    chart.options.plugins.tooltip.backgroundColor = tc.ttBg;
+    chart.options.plugins.tooltip.borderColor = tc.ttBorder;
+    chart.options.plugins.tooltip.bodyColor = tc.ttBody;
+    chart.update('none');
+  });
+
+  // Update stat charts
+  statCharts.forEach(c => {
+    c.options.scales.x.grid.color = tc.grid;
+    c.options.scales.x.ticks.color = tc.text;
+    c.options.scales.y.grid.color = tc.grid;
+    c.options.scales.y.ticks.color = tc.text;
+    c.update('none');
+  });
+}
+
+document.getElementById('btn-theme').addEventListener('click', () => {
+  applyTheme(currentTheme === 'dark' ? 'light' : 'dark');
+});
+
+/* ═══ Tabs ═══ */
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById(tab.dataset.tab).classList.add('active');
+
+    if (tab.dataset.tab === 'tab-stats') loadStats();
+    if (tab.dataset.tab === 'tab-alertes') loadAlertes();
+  });
+});
+
+/* ═══ Charts ═══ */
+const tc = THEME_COLORS[currentTheme];
+Chart.defaults.color = tc.text;
+Chart.defaults.font.family = "'Courier New', monospace";
+Chart.defaults.font.size = 11;
+
+function buildChartConfig(key) {
+  const tc = THEME_COLORS[currentTheme];
+  const color = tc[key];
+  const unit = UNITS[key];
+  const th = THRESHOLDS[key];
+
+  return {
+    type: 'line',
+    data: { datasets: [{ data: [], borderColor: color, backgroundColor: color+'18',
+      borderWidth: 1.5, pointRadius: 2, pointHoverRadius: 4, pointBackgroundColor: color, fill: true, tension: 0.3 }] },
+    options: {
+      parsing: false,
+      animation: false, responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        decimation: { enabled: true, algorithm: 'min-max' },
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: tc.ttBg, borderColor: tc.ttBorder, borderWidth: 1,
+          titleColor: tc.text, bodyColor: tc.ttBody,
+          callbacks: {
+            label: ctx => ` ${ctx.raw.y} ${unit}`,
+            title: items => new Date(items[0].raw.x).toLocaleString('fr-FR')
+          }
+        },
+        annotation: {
+          annotations: {
+            warnLine: {
+              type: 'line', yMin: th.warn, yMax: th.warn,
+              borderColor: '#d29922', borderWidth: 1.5, borderDash: [6, 3],
+              label: { display: true, content: 'Attention ' + th.warn, position: 'start',
+                font: { size: 9, family: "'Courier New', monospace" }, color: '#d29922', backgroundColor: 'transparent', padding: 2 }
+            },
+            alertLine: {
+              type: 'line', yMin: th.alert, yMax: th.alert,
+              borderColor: '#f85149', borderWidth: 1.5, borderDash: [6, 3],
+              label: { display: true, content: 'Alerte ' + th.alert, position: 'start',
+                font: { size: 9, family: "'Courier New', monospace" }, color: '#f85149', backgroundColor: 'transparent', padding: 2 }
+            }
+          }
+        },
+        zoom: {
+          zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'x' },
+          pan: { enabled: true, mode: 'x' }
+        }
+      },
+      scales: {
+        x: { type:'time', time: { tooltipFormat:'dd/MM/yyyy HH:mm:ss', displayFormats: { minute:'HH:mm', hour:'HH:mm', second:'HH:mm:ss' } },
+          grid: { color: tc.grid }, ticks: { maxTicksLimit: 8, maxRotation: 0 } },
+        y: { grid: { color: tc.grid }, ticks: { callback: v => `${v} ${unit}` } }
+      }
+    }
+  };
+}
+
+const CHART_IDS = { co2:'chart-co2', tvoc:'chart-tvoc', co:'chart-co', temperature:'chart-temp', humidite:'chart-hum' };
+const CHARTS = {};
+Object.keys(CHART_IDS).forEach(k => { CHARTS[k] = new Chart(document.getElementById(CHART_IDS[k]), buildChartConfig(k)); });
+
+const LIVE_IDS = { co2:'lv-co2', tvoc:'lv-tvoc', co:'lv-co', temperature:'lv-temp', humidite:'lv-hum' };
+const STATUS_IDS = { co2:'st-co2', tvoc:'st-tvoc', co:'st-co', temperature:'st-temp', humidite:'st-hum' };
+
+/* ═══ Reset zoom ═══ */
+document.getElementById('btn-reset-zoom').addEventListener('click', () => {
+  Object.values(CHARTS).forEach(c => c.resetZoom());
+});
+
+function evalState(key, value) {
+  if (value === null || value === undefined) return { cls:'st-off', label:'--' };
+  const t = THRESHOLDS[key];
+  if (value >= t.alert) return { cls:'st-alert', label:'ALERTE' };
+  if (value >= t.warn) return { cls:'st-warn', label:'ATTENTION' };
+  return { cls:'st-ok', label:'OK' };
+}
+
+function updateSensorStatus(labels) {
+  const el = document.getElementById('sensor-status');
+  if (!labels || !labels.length) { el.className='offline'; el.textContent='AUCUNE DONNEE'; return; }
+  const diff = (new Date() - new Date(labels[labels.length-1])) / 60000;
+  if (diff > OFFLINE_MINUTES) { el.className='offline'; el.textContent='HORS LIGNE (' + Math.round(diff) + ' min)'; }
+  else { el.className='online'; el.textContent='EN LIGNE'; }
+}
+
+let notificationSent = false;
+
+function updateStatus(data) {
+  const keys = ['co2','tvoc','co','temperature','humidite'];
+  let worstCls = 'st-ok', worstLabel = 'NORMAL';
+  keys.forEach(k => {
+    const last = data[k].at(-1);
+    const { cls, label } = evalState(k, last);
+    const el = document.getElementById(STATUS_IDS[k]);
+    el.className = 'status-value ' + cls;
+    el.textContent = last !== null && last !== undefined ? last + ' -- ' + label : '--';
+    if (cls === 'st-alert') { worstCls = 'st-alert'; worstLabel = 'ALERTE'; }
+    else if (cls === 'st-warn' && worstCls !== 'st-alert') { worstCls = 'st-warn'; worstLabel = 'ATTENTION'; }
+    const lv = document.getElementById(LIVE_IDS[k]);
+    if (lv) lv.textContent = last !== null && last !== undefined ? last : '--';
+  });
+  const g = document.getElementById('st-global');
+  g.className = 'status-value ' + worstCls;
+  g.textContent = worstLabel;
+
+  if (worstCls === 'st-alert') {
+    if (!notificationSent && 'Notification' in window && Notification.permission === 'granted') {
+      new Notification('🚨 IAQ Alerte Critique', { body: 'Un capteur a dépassé le seuil de tolérance (Danger) !' });
+      notificationSent = true;
+    }
+  } else {
+    notificationSent = false;
+  }
+}
+
+if ('Notification' in window && Notification.permission !== 'denied' && Notification.permission !== 'granted') {
+  Notification.requestPermission();
+}
+
+/* ═══ Data fetch ═══ */
+function buildDataUrl() {
+  const n = document.getElementById('filter-n').value || 200;
+  let url = '/api/data?n=' + n;
+  const from = document.getElementById('filter-from').value;
+  const to = document.getElementById('filter-to').value;
+  if (from) url += '&from=' + from;
+  if (to) url += '&to=' + to;
+  return url;
+}
+
+async function fetchAndUpdate() {
+  try {
+    const resp = await fetch(buildDataUrl());
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+
+    const timestamps = data.labels.map(lbl => new Date(lbl).getTime());
+
+    Object.keys(CHARTS).forEach(key => {
+      CHARTS[key].data.datasets[0].data = timestamps.map((ts, i) => ({ x: ts, y: data[key][i] }));
+      CHARTS[key].update('none');
+    });
+
+    updateStatus(data);
+    updateSensorStatus(data.labels);
+    document.getElementById('last-update').textContent = 'MAJ ' + new Date().toLocaleTimeString('fr-FR');
+  } catch (err) {
+    console.error(err);
+    document.getElementById('last-update').textContent = 'Erreur connexion';
+  } finally {
+    document.getElementById('loader').classList.add('hidden');
+  }
+}
+
+document.getElementById('btn-filter').addEventListener('click', fetchAndUpdate);
+document.getElementById('btn-reset').addEventListener('click', () => {
+  document.getElementById('filter-from').value = '';
+  document.getElementById('filter-to').value = '';
+  document.getElementById('filter-n').value = 2880;
+  Object.values(CHARTS).forEach(c => c.resetZoom());
+  fetchAndUpdate();
+});
+document.getElementById('btn-dash-24h').addEventListener('click', () => {
+  document.getElementById('filter-from').value = daysAgo(1);
+  document.getElementById('filter-to').value = daysAgo(0);
+  document.getElementById('filter-n').value = 1440;
+  fetchAndUpdate();
+});
+document.getElementById('btn-dash-7d').addEventListener('click', () => {
+  document.getElementById('filter-from').value = daysAgo(7);
+  document.getElementById('filter-to').value = daysAgo(0);
+  document.getElementById('filter-n').value = 10000;
+  fetchAndUpdate();
+});
+document.getElementById('btn-dash-30d').addEventListener('click', () => {
+  document.getElementById('filter-from').value = daysAgo(30);
+  document.getElementById('filter-to').value = daysAgo(0);
+  document.getElementById('filter-n').value = 43200;
+  fetchAndUpdate();
+});
+
+/* ═══ Seed & Clear ═══ */
+const btnSeed = document.getElementById('btn-seed');
+if (btnSeed) {
+  btnSeed.addEventListener('click', async () => {
+    const btn = document.getElementById('btn-seed');
+    btn.textContent = '...';
+    btn.disabled = true;
+    try {
+      const resp = await fetch('/api/seed', { method: 'POST' });
+      const data = await resp.json();
+      if (data.statut === 'ok') {
+        fetchAndUpdate();
+      }
+    } catch (e) { console.error(e); }
+    btn.textContent = 'Donnees test';
+    btn.disabled = false;
+  });
+}
+
+document.getElementById('btn-clear').addEventListener('click', async () => {
+  if (!confirm('Supprimer TOUTES les donnees (mesures + alertes) ?')) return;
+  try {
+    const resp = await fetch('/api/clear', { method: 'POST' });
+    const data = await resp.json();
+    if (data.statut === 'ok') {
+      fetchAndUpdate();
+    }
+  } catch (e) { console.error(e); }
+});
+
+/* ═══ Stats ═══ */
+let statCharts = [];
+
+async function loadStats(from, to) {
+  const f = from || document.getElementById('stats-from').value;
+  const t = to || document.getElementById('stats-to').value;
+  let url = '/api/stats?';
+  if (f) url += 'from=' + f + '&';
+  if (t) url += 'to=' + t + '&';
+
+  const grid = document.getElementById('stats-grid');
+  grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:var(--muted);padding:2rem;font-size:0.8rem">Chargement...</div>';
+
+  const resp = await fetch(url);
+  const data = await resp.json();
+
+  // Destroy old stat charts
+  statCharts.forEach(c => c.destroy());
+  statCharts = [];
+
+  grid.innerHTML = '';
+  const tc = THEME_COLORS[currentTheme];
+
+  Object.keys(data.capteurs).forEach(key => {
+    const s = data.capteurs[key];
+    const color = tc[key];
+    const th = THRESHOLDS[key];
+    const card = document.createElement('div');
+    card.className = 'stat-card';
+    card.style.borderTop = '3px solid ' + color;
+
+    const canvasId = 'stat-chart-' + key;
+    card.innerHTML =
+      '<h3>' + s.label + ' (' + s.unite + ')</h3>' +
+      '<div class="stat-row"><span class="label">Moyenne</span><span class="val" style="color:' + color + '">' + (s.moyenne !== null ? s.moyenne : '--') + '</span></div>' +
+      '<div class="stat-row"><span class="label">Min</span><span class="val">' + (s.min !== null ? s.min : '--') + '</span></div>' +
+      '<div class="stat-row"><span class="label">Max</span><span class="val">' + (s.max !== null ? s.max : '--') + '</span></div>' +
+      '<div class="stat-chart-wrap"><canvas id="' + canvasId + '"></canvas></div>';
+    grid.appendChild(card);
+
+    // Create bar chart if data exists
+    if (s.moyenne !== null) {
+      const ctx = document.getElementById(canvasId);
+      const chart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: ['Moy', 'Min', 'Max'],
+          datasets: [{
+            data: [s.moyenne, s.min, s.max],
+            backgroundColor: [color + '99', color + '44', color + 'cc'],
+            borderColor: color,
+            borderWidth: 1,
+            borderRadius: 3,
+          }]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false, animation: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: { enabled: true },
+            annotation: {
+              annotations: {
+                warnLine: {
+                  type: 'line', yMin: th.warn, yMax: th.warn,
+                  borderColor: '#d29922', borderWidth: 1, borderDash: [4, 2]
+                },
+                alertLine: {
+                  type: 'line', yMin: th.alert, yMax: th.alert,
+                  borderColor: '#f85149', borderWidth: 1, borderDash: [4, 2]
+                }
+              }
+            }
+          },
+          scales: {
+            x: { grid: { display: false, color: tc.grid }, ticks: { color: tc.text, font: { size: 9 } } },
+            y: { grid: { color: tc.grid }, ticks: { color: tc.text, font: { size: 9 } }, beginAtZero: true }
+          }
+        }
+      });
+      statCharts.push(chart);
+    }
+  });
+
+  document.getElementById('stats-total').textContent =
+    data.total_mesures + ' mesures -- du ' + data.periode.de + ' au ' + data.periode.a;
+}
+
+document.getElementById('btn-stats').addEventListener('click', () => loadStats());
+
+function daysAgo(n) {
+  const d = new Date(); d.setDate(d.getDate() - n);
+  return d.toISOString().split('T')[0];
+}
+document.getElementById('btn-stats-24h').addEventListener('click', () => {
+  document.getElementById('stats-from').value = daysAgo(1);
+  document.getElementById('stats-to').value = daysAgo(0);
+  loadStats(daysAgo(1), daysAgo(0));
+});
+document.getElementById('btn-stats-7d').addEventListener('click', () => {
+  document.getElementById('stats-from').value = daysAgo(7);
+  document.getElementById('stats-to').value = daysAgo(0);
+  loadStats(daysAgo(7), daysAgo(0));
+});
+document.getElementById('btn-stats-30d').addEventListener('click', () => {
+  document.getElementById('stats-from').value = daysAgo(30);
+  document.getElementById('stats-to').value = daysAgo(0);
+  loadStats(daysAgo(30), daysAgo(0));
+});
+
+/* ═══ Alertes ═══ */
+async function loadAlertes() {
+  const list = document.getElementById('alert-list');
+  list.innerHTML = '<div class="alert-empty">Chargement...</div>';
+
+  let url = '/api/alertes?n=100';
+  const from = document.getElementById('alert-from').value;
+  const to = document.getElementById('alert-to').value;
+  const niveau = document.getElementById('alert-niveau').value;
+  const capteur = document.getElementById('alert-capteur').value;
+  if (from) url += '&from=' + from;
+  if (to) url += '&to=' + to;
+  if (niveau) url += '&niveau=' + niveau;
+  if (capteur) url += '&capteur=' + capteur;
+
+  const resp = await fetch(url);
+  const data = await resp.json();
+
+  if (!data.length) {
+    list.innerHTML = '<div class="alert-empty">Aucune alerte enregistree</div>';
+    return;
+  }
+
+  list.innerHTML = data.map(a =>
+    '<div class="alert-item">' +
+      '<span class="alert-dot ' + a.niveau + '"></span>' +
+      '<span class="alert-time">' + a.timestamp + '</span>' +
+      '<span class="alert-msg">' + a.message + '</span>' +
+    '</div>'
+  ).join('');
+}
+
+document.getElementById('btn-alertes').addEventListener('click', loadAlertes);
+
+/* ═══ Export ═══ */
+document.getElementById('btn-export-csv').addEventListener('click', e => {
+  e.preventDefault();
+  const from = document.getElementById('filter-from').value;
+  const to = document.getElementById('filter-to').value;
+  let url = '/api/export?format=csv';
+  if (from) url += '&from=' + from;
+  if (to) url += '&to=' + to;
+  window.location.href = url;
+});
+
+/* ═══ Alert badge ═══ */
+async function updateAlertBadge() {
+  try {
+    const resp = await fetch('/api/alertes?n=100&from=' + daysAgo(1));
+    const data = await resp.json();
+    const badge = document.getElementById('alert-badge');
+    if (data.length > 0) {
+      badge.textContent = data.length > 99 ? '99+' : data.length;
+      badge.style.display = 'inline-block';
+    } else {
+      badge.style.display = 'none';
+    }
+  } catch(e) {}
+}
+
+/* ═══ Start + WebSockets ═══ */
+applyTheme(currentTheme);
+fetchAndUpdate();
+updateAlertBadge();
+
+const socket = io();
+socket.on('update_needed', () => {
+  const activeTab = document.querySelector('.tab.active');
+  if (!activeTab) return;
+  const tabId = activeTab.dataset.tab;
+  if (tabId === 'tab-dashboard') fetchAndUpdate();
+  else if (tabId === 'tab-stats') loadStats();
+  else if (tabId === 'tab-alertes') loadAlertes();
+  updateAlertBadge();
+});
+</script>
+</body>
+</html>
