@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>IAQ — Comprendre les capteurs</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230d1117'/><text x='16' y='22' text-anchor='middle' font-size='14' font-family='monospace' fill='%2358a6ff'>IAQ</text></svg>">
+
+  <style>
+    :root {
+      --bg: #0d1117; --surface: #161b22; --border: #30363d;
+      --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
+    }
+    [data-theme="light"] {
+      --bg: #ffffff; --surface: #f6f8fa; --border: #d0d7de;
+      --text: #1f2328; --muted: #656d76; --accent: #0969da;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: 'Courier New', monospace; min-height: 100vh; transition: background 0.3s, color 0.3s; }
+
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 1rem 2rem; border-bottom: 1px solid var(--border);
+      background: var(--surface); position: sticky; top: 0; z-index: 10;
+    }
+    header h1 { font-size: 1rem; letter-spacing: 0.15em; text-transform: uppercase; color: var(--accent); }
+    header a { color: var(--muted); text-decoration: none; font-size: 0.8rem; }
+    header a:hover { color: var(--accent); }
+
+    main { max-width: 900px; margin: 0 auto; padding: 2rem; }
+
+    .sensor-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; margin-bottom: 1.5rem; overflow: hidden;
+    }
+    .sensor-card-header {
+      padding: 1rem 1.5rem; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 0.8rem;
+    }
+    .sensor-card-header .dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+    .sensor-card-header h2 { font-size: 1rem; letter-spacing: 0.1em; }
+    .sensor-card-header .unit { color: var(--muted); font-size: 0.8rem; margin-left: auto; }
+    .sensor-card-body { padding: 1.5rem; line-height: 1.7; font-size: 0.9rem; }
+    .sensor-card-body p { margin-bottom: 0.8rem; }
+    .sensor-card-body strong { color: var(--accent); }
+
+    .levels { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 0.8rem 0; }
+    .level {
+      padding: 0.4rem 0.8rem; border-radius: 4px; font-size: 0.8rem;
+      font-weight: 600; letter-spacing: 0.05em;
+    }
+    .level-ok { background: rgba(63,185,80,0.15); color: #3fb950; border: 1px solid rgba(63,185,80,0.3); }
+    .level-warn { background: rgba(210,153,34,0.15); color: #d29922; border: 1px solid rgba(210,153,34,0.3); }
+    .level-alert { background: rgba(248,81,73,0.15); color: #f85149; border: 1px solid rgba(248,81,73,0.3); }
+
+    .tip {
+      background: rgba(88,166,255,0.08); border-left: 3px solid var(--accent);
+      padding: 0.8rem 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0;
+      font-size: 0.85rem; color: var(--muted);
+    }
+
+    @media (max-width: 600px) { main { padding: 1rem; } }
+  </style>
+  <script>
+    const savedTheme = localStorage.getItem('iaq-theme') || 'dark';
+    document.documentElement.setAttribute('data-theme', savedTheme);
+  </script>
+</head>
+<body>
+
+<header>
+  <h1>Comprendre les capteurs</h1>
+  <div style="display: flex; gap: 1rem; align-items: center;">
+    <button id="btn-theme" style="background:none; border:none; color:var(--text); cursor:pointer; font-size:1.2rem;" onclick="
+      let t = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+      localStorage.setItem('iaq-theme', t);
+      this.innerHTML = t === 'dark' ? '☀\uFE0E' : '☾\uFE0E';
+    ">☀&#xFE0E;</button>
+    <a href="/">Retour au tableau de bord</a>
+  </div>
+</header>
+<script>
+  window.addEventListener('DOMContentLoaded', () => {
+    const btn = document.getElementById('btn-theme');
+    if (btn) btn.innerHTML = document.documentElement.getAttribute('data-theme') === 'dark' ? '☀&#xFE0E;' : '☾&#xFE0E;';
+  });
+</script>
+
+<main>
+  <!-- CO2 -->
+  <div class="sensor-card">
+    <div class="sensor-card-header">
+      <span class="dot" style="background:#f85149"></span>
+      <h2>CO2 — Dioxyde de carbone</h2>
+      <span class="unit">ppm (parties par million)</span>
+    </div>
+    <div class="sensor-card-body">
+      <p>Le CO2 est un gaz naturellement présent dans l'air. On en produit en respirant.
+         Dans un espace fermé (salle de classe, bureau, chambre), le taux monte vite
+         si on ne ventile pas.</p>
+      <p><strong>Pourquoi c'est important :</strong> un taux élevé de CO2 provoque
+         fatigue, maux de tête, difficultés de concentration, et peut indiquer un
+         mauvais renouvellement de l'air (risque viral accru).</p>
+      <div class="levels">
+        <span class="level level-ok">< 1000 ppm — Air frais, tout va bien</span>
+        <span class="level level-warn">1000-2000 ppm — Aérer la pièce</span>
+        <span class="level level-alert">> 2000 ppm — Air confiné, aérer immédiatement</span>
+      </div>
+      <div class="tip">L'air extérieur est à ~420 ppm. Une salle de classe avec 30 élèves
+        peut dépasser 2000 ppm en 30 minutes sans ventilation.
+        <br><strong>Source :</strong> <a href="https://www.anses.fr/fr/content/le-dioxyde-de-carbone-co2-dans-lair-int%C3%A9rieur" target="_blank" rel="noopener">ANSES (Air intérieur)</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- TVOC -->
+  <div class="sensor-card">
+    <div class="sensor-card-header">
+      <span class="dot" style="background:#d29922"></span>
+      <h2>TVOC — Composés organiques volatils</h2>
+      <span class="unit">ppb (parties par milliard)</span>
+    </div>
+    <div class="sensor-card-body">
+      <p>Les TVOC regroupent des centaines de composés chimiques qui s'évaporent
+         facilement : peintures, colles, produits ménagers, parfums, meubles neufs,
+         imprimantes...</p>
+      <p><strong>Pourquoi c'est important :</strong> certains TVOC sont cancérigènes
+         (formaldéhyde, benzène). Même à faible dose, ils irritent les yeux, le nez,
+         la gorge et peuvent provoquer des allergies.</p>
+      <div class="levels">
+        <span class="level level-ok">< 300 ppb — Normal</span>
+        <span class="level level-warn">300-600 ppb — Sources de pollution à identifier</span>
+        <span class="level level-alert">> 600 ppb — Ventiler et identifier la source</span>
+      </div>
+      <div class="tip">Après avoir peint une pièce ou posé un sol neuf, les TVOC
+        peuvent rester élevés pendant des semaines. Aérer régulièrement !
+        <br><strong>Source :</strong> <a href="https://www.anses.fr/fr/content/les-compos%C3%A9s-organiques-volatils-cov" target="_blank" rel="noopener">ANSES (Organiques volatils)</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- CO -->
+  <div class="sensor-card">
+    <div class="sensor-card-header">
+      <span class="dot" style="background:#bc8cff"></span>
+      <h2>CO — Monoxyde de carbone</h2>
+      <span class="unit">ppm</span>
+    </div>
+    <div class="sensor-card-body">
+      <p>Le CO est un gaz <strong>inodore et mortel</strong>. Il est produit par la
+         combustion incomplète : chaudières, chauffe-eau, poêles à bois, barbecue
+         intérieur, moteurs de voiture dans un garage.</p>
+      <p><strong>Pourquoi c'est important :</strong> le CO remplace l'oxygène dans le
+         sang. L'intoxication provoque maux de tête, nausées, vertiges, perte de
+         connaissance, et peut être fatale.</p>
+      <div class="levels">
+        <span class="level level-ok">< 9 ppm — Normal</span>
+        <span class="level level-warn">9-35 ppm — Aérer, vérifier les appareils</span>
+        <span class="level level-alert">> 35 ppm — DANGER : évacuer et appeler les secours</span>
+      </div>
+      <div class="tip">En France, le CO tue environ 300 personnes par an. Si l'alerte CO
+        se déclenche, ne cherchez pas la cause : sortez d'abord, appelez le 15 ou le 18.
+        <br><strong>Source :</strong> <a href="https://www.anses.fr/fr/content/le-monoxyde-de-carbone-co" target="_blank" rel="noopener">ANSES (Intoxication CO)</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Temperature -->
+  <div class="sensor-card">
+    <div class="sensor-card-header">
+      <span class="dot" style="background:#3fb950"></span>
+      <h2>Température</h2>
+      <span class="unit">°C</span>
+    </div>
+    <div class="sensor-card-body">
+      <p>La température intérieure influence le confort, la productivité et la santé.
+         L'OMS recommande 18-22°C pour un logement.</p>
+      <div class="levels">
+        <span class="level level-ok">< 28°C — Confortable</span>
+        <span class="level level-warn">28-35°C — Inconfortable, risque de déshydratation</span>
+        <span class="level level-alert">> 35°C — Risque de coup de chaleur</span>
+      </div>
+      <div class="tip"><strong>Source :</strong> <a href="https://www.ademe.fr/expertises/batiment/" target="_blank" rel="noopener">ADEME (Confort thermique)</a></div>
+    </div>
+  </div>
+
+  <!-- Humidite -->
+  <div class="sensor-card">
+    <div class="sensor-card-header">
+      <span class="dot" style="background:#58a6ff"></span>
+      <h2>Humidité relative</h2>
+      <span class="unit">%</span>
+    </div>
+    <div class="sensor-card-body">
+      <p>L'humidité relative mesure la quantité de vapeur d'eau dans l'air.
+         L'idéal est entre 40% et 60%.</p>
+      <p><strong>Trop sec (< 30%) :</strong> irritation des yeux, peau sèche, infections
+         respiratoires. <strong>Trop humide (> 60%) :</strong> moisissures, acariens,
+         sensation d'étouffement.</p>
+      <div class="levels">
+        <span class="level level-ok">< 60% — Normal</span>
+        <span class="level level-warn">60-75% — Risque de moisissures</span>
+        <span class="level level-alert">> 75% — Moisissures probables, déshumidifier</span>
+      </div>
+      <div class="tip"><strong>Source :</strong> <a href="https://www.who.int/publications/i/item/9789289041683" target="_blank" rel="noopener">OMS (Guidelines indoor dampness)</a></div>
+    </div>
+  </div>
+</main>
+
+</body>
+</html>
