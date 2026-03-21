@@ -10,13 +10,13 @@ meme sans experience prealable en programmation ou en electronique.
 
 Ce projet permet de mesurer cinq parametres de l'air en temps reel :
 
-| Parametre   | Capteur    | Unite | Seuil Attention | Seuil Alerte |
-|:------------|:-----------|:------|:----------------|:-------------|
-| CO2         | MH-Z19     | ppm   | 1000             | 2000         |
-| TVOC        | CCS811     | ppb   | 300              | 600          |
-| CO          | MQ-7 (via ADS1115) | ppm   | 9       | 35           |
-| Temperature | DHT22      | C     | 28               | 35           |
-| Humidite    | DHT22      | %     | 60               | 75           |
+| Parametre   | Capteur    | Unite | Seuil Activation | Seuil Desactivation |
+|:------------|:-----------|:------|:-----------------|:--------------------|
+| CO2         | MH-Z19     | ppm   | 2000              | 1800               |
+| TVOC        | CCS811     | ppb   | 600               | 450                |
+| CO          | MQ-7 (via ADS1115) | ppm   | 35        | 25                 |
+| Temperature | DHT22      | C     | 35                | 32                 |
+| Humidite    | DHT22      | %     | 75                | 65                 |
 
 L'architecture est la suivante :
 
@@ -39,7 +39,7 @@ L'architecture est la suivante :
 | `app.py`                     | 641    | Serveur web Python Flask (backend). |
 | `templates/index.html`       | 819    | Interface web du tableau de bord (frontend). |
 | `templates/infos.html`       | 212    | Page educative des capteurs et seuils de sante. |
-| `esp32_iaq/esp32_iaq_v2.ino` | 491    | Code Arduino pour l'ESP32 V2 (firmware actif). |
+| `esp32_iaq/esp32_iaq_v2.ino` | 538    | Code Arduino pour l'ESP32 V2 (firmware actif). |
 | `esp32_iaq/esp32_iaq.ino`    | 527    | Ancien firmware V1 (archive, ne plus utiliser). |
 | `mq7_calibration/mq7_calibration.ino` | 82 | Script de calibration du MQ-7 via ADS1115. |
 | `requirements.txt`           | 31     | Dependances Python epinglees (Flask, gunicorn...). |
@@ -222,8 +222,11 @@ Les deux tables possedent un index sur `timestamp`.
 - **NTP** : Horodatage autonome, meme hors-ligne.
 - **Calibration croisee** : `setEnvironmentalData(hum, temp)` ameliore CCS811.
 - **Valeurs NAN** : Les champs invalides sont omis du JSON.
-- **Ventilateur automatique** : S'active si CO2>2000, TVOC>600, CO>35, Temp>35, Hum>75.
-- **Buzzer** : 3 bips si le serveur confirme une alerte critique.
+- **Hysteresis** : Seuils de desactivation plus bas que les seuils d'activation
+  pour eviter le clignotement du ventilateur (ex: active a 2000 ppm, desactive a 1800 ppm).
+- **Machine a etats Buzzer/Ventilateur** : Sequence intelligente :
+  IDLE (LED verte) → BUZZING 2s (LED rouge + sirene) → FAN_ON (ventilation).
+  Si les valeurs redescendent pendant le buzzer, l'alerte est annulee.
 - **LEDs** : Verte (GPIO 25) = OK. Rouge (GPIO 26) = alerte.
 
 ### 5.4 Parametres a modifier avant televersement
