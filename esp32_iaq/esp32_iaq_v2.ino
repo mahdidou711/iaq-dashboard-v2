@@ -57,12 +57,18 @@ const unsigned long SEND_INTERVAL_MS = 10000;  // Rythme Chrono de 10 secondes e
 #define MQ7_R0         10.0   
 #define MQ7_RL         10.0   
 
-// --- SEUILS D'ALERTE (Déclenchement Ventilateur) ---
-const float ALERT_CO2  = 2000.0; // ppm
-const float ALERT_TVOC = 600.0;  // ppb
-const float ALERT_CO   = 35.0;   // ppm
-const float ALERT_TEMP = 35.0;   // °C
-const float ALERT_HUM  = 75.0;   // %
+// --- SEUILS D'ALERTE AVEC HYSTERESIS (ON/OFF séparés pour éviter le clignotement) ---
+const float ALERT_CO2_ON   = 2000.0;  const float ALERT_CO2_OFF   = 1800.0; // ppm
+const float ALERT_TVOC_ON  = 600.0;   const float ALERT_TVOC_OFF  = 450.0;  // ppb
+const float ALERT_CO_ON    = 35.0;    const float ALERT_CO_OFF    = 25.0;   // ppm
+const float ALERT_TEMP_ON  = 35.0;    const float ALERT_TEMP_OFF  = 32.0;   // °C
+const float ALERT_HUM_ON   = 75.0;    const float ALERT_HUM_OFF   = 65.0;   // %
+
+// --- MACHINE A ETATS POUR LE BUZZER ET LE VENTILATEUR ---
+enum AlertState { IDLE, BUZZING, FAN_ON };
+AlertState alertState = IDLE;
+uint32_t buzzStart = 0;
+const uint32_t BUZZ_DURATION_MS = 2000; // Durée du buzzer avant passage au ventilateur
 
 Adafruit_CCS811 ccs811;      // TVOC
 DHT dht(DHT_PIN, DHT_TYPE);
@@ -172,21 +178,63 @@ void loop() {
     Serial.printf("  Temp : %.1f °C\n", temp);
     Serial.printf("  Hum  : %.1f %%\n", hum);
 
-    // ********* AUTO-PILOTE VENTILATEUR ************
-    // Si on detecte une bulle Toxique dans ses relevés, 
-    // l'Alerte passe a "True" (VRAI)
-    bool alerteActuelle = false;
-    if (co2 > ALERT_CO2 || tvoc > ALERT_TVOC || co > ALERT_CO || temp > ALERT_TEMP || hum > ALERT_HUM) {
-      alerteActuelle = true;
+    // ********* MACHINE A ETATS : BUZZER → VENTILATEUR ************
+    // Détecte si un seuil HAUT est franchi (activation)
+    bool seuilHaut = false;
+    if (co2 > ALERT_CO2_ON || tvoc > ALERT_TVOC_ON || co > ALERT_CO_ON || temp > ALERT_TEMP_ON || hum > ALERT_HUM_ON) {
+      seuilHaut = true;
+    }
+    // Détecte si TOUS les seuils sont retombés sous le seuil BAS (désactivation)
+    bool toutCalme = true;
+    if (co2 > ALERT_CO2_OFF || tvoc > ALERT_TVOC_OFF || co > ALERT_CO_OFF || temp > ALERT_TEMP_OFF || hum > ALERT_HUM_OFF) {
+      toutCalme = false;
     }
 
-    if (alerteActuelle) {
-      // LE VENTILATEUR RECTANGULAIRE S'ALLUME MAINTENANT (Haut du signal)
-      if (VENTILATOR_PIN >= 0) digitalWrite(VENTILATOR_PIN, HIGH);
-      Serial.println("[VENTILATEUR] EN MARCHE (Seuils d'alerte depasses)");
-    } else {
-      if (VENTILATOR_PIN >= 0) digitalWrite(VENTILATOR_PIN, LOW);
-      Serial.println("[\\] Oof ! Arrêt Auto. de l'Aérateur...");
+    unsigned long maintenant2 = millis();
+    switch (alertState) {
+      case IDLE:
+        if (seuilHaut) {
+          alertState = BUZZING;
+          buzzStart = maintenant2;
+          if (BUZZER_PIN >= 0) digitalWrite(BUZZER_PIN, HIGH);
+          if (VENTILATOR_PIN >= 0) digitalWrite(VENTILATOR_PIN, LOW);
+          if (LED_ALERT_PIN >= 0) digitalWrite(LED_ALERT_PIN, HIGH);
+          if (LED_OK_PIN >= 0) digitalWrite(LED_OK_PIN, LOW);
+          Serial.println("[ALERTE] BUZZER ACTIVE !");
+        } else {
+          if (LED_OK_PIN >= 0) digitalWrite(LED_OK_PIN, HIGH);
+          if (LED_ALERT_PIN >= 0) digitalWrite(LED_ALERT_PIN, LOW);
+        }
+        break;
+
+      case BUZZING:
+        if (toutCalme) {
+          // Tout est redescendu, fausse alerte
+          if (BUZZER_PIN >= 0) digitalWrite(BUZZER_PIN, LOW);
+          if (VENTILATOR_PIN >= 0) digitalWrite(VENTILATOR_PIN, LOW);
+          if (LED_OK_PIN >= 0) digitalWrite(LED_OK_PIN, HIGH);
+          if (LED_ALERT_PIN >= 0) digitalWrite(LED_ALERT_PIN, LOW);
+          alertState = IDLE;
+          Serial.println("[ALERTE] Annulée (valeurs revenues à la normale)");
+        } else if (maintenant2 - buzzStart >= BUZZ_DURATION_MS) {
+          // Fin du buzzer → passage au ventilateur
+          if (BUZZER_PIN >= 0) digitalWrite(BUZZER_PIN, LOW);
+          if (VENTILATOR_PIN >= 0) digitalWrite(VENTILATOR_PIN, HIGH);
+          alertState = FAN_ON;
+          Serial.println("[VENTILATEUR] EN MARCHE (après buzzer)");
+        }
+        break;
+
+      case FAN_ON:
+        if (toutCalme) {
+          // Tout est revenu sous les seuils bas → arrêt
+          if (VENTILATOR_PIN >= 0) digitalWrite(VENTILATOR_PIN, LOW);
+          if (LED_OK_PIN >= 0) digitalWrite(LED_OK_PIN, HIGH);
+          if (LED_ALERT_PIN >= 0) digitalWrite(LED_ALERT_PIN, LOW);
+          alertState = IDLE;
+          Serial.println("[VENTILATEUR] Arrêt (valeurs revenues à la normale)");
+        }
+        break;
     }
 
     // Le capteur CCS811 peut moduler sa mesure plus justement via l'autre puce Température croisée
