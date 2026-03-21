@@ -61,7 +61,7 @@ const unsigned long SEND_INTERVAL_MS = 10000;  // Rythme Chrono de 10 secondes e
 const float ALERT_CO2_ON   = 2000.0;  const float ALERT_CO2_OFF   = 1800.0; // ppm
 const float ALERT_TVOC_ON  = 600.0;   const float ALERT_TVOC_OFF  = 450.0;  // ppb
 const float ALERT_CO_ON    = 35.0;    const float ALERT_CO_OFF    = 25.0;   // ppm
-const float ALERT_TEMP_ON  = 35.0;    const float ALERT_TEMP_OFF  = 32.0;   // °C
+const float ALERT_TEMP_ON  = 35.0;    const float ALERT_TEMP_OFF  = 32.0;   // C
 const float ALERT_HUM_ON   = 75.0;    const float ALERT_HUM_OFF   = 65.0;   // %
 
 // --- MACHINE A ETATS POUR LE BUZZER ET LE VENTILATEUR ---
@@ -82,9 +82,9 @@ unsigned long dernierEnvoi = 0;     // Compte chrono du dernier top départ d'ac
 // --- LISTE DE SURVIE HORS LIGNE OBLIGATOIRE ---
 // La mémoire RAM disparaît avec LittleFS. Les données sont écrites dans "/mesures.jsonl"
 
-// ════════════════════════════════════════════════════════════════ //
+// ================================================================ //
 // LE BOUTON D'ACTION D'OUVERTURE: LE SETUP (ALLUMAGE SEUL FOIS)
-// ════════════════════════════════════════════════════════════════ //
+// ================================================================ //
 void setup() {
   Serial.begin(115200);   // Allumage Câble pour la lecture
   delay(500);             // Fait un souffle de 0,5 Sec de base
@@ -145,9 +145,9 @@ void setup() {
 }
 
 
-// ════════════════════════════════════════════════════════════════ //
+// ================================================================ //
 // BOUBLE PERMANENTE (LE COEUR QUI BAT 60X FOIS ET A L'INFINI)
-// ════════════════════════════════════════════════════════════════ //
+// ================================================================ //
 void loop() {
   // Dit au fameux Garde (Watchdog) de ne pas redémarrer le système à la minute où on la joue car on est réveillés
   esp_task_wdt_reset(); 
@@ -175,7 +175,7 @@ void loop() {
     Serial.printf("  CO2  : %.0f ppm\n", co2);
     Serial.printf("  TVOC : %.0f ppb\n", tvoc);
     Serial.printf("  CO   : %.1f ppm\n", co);
-    Serial.printf("  Temp : %.1f °C\n", temp);
+    Serial.printf("  Temp : %.1f C\n", temp);
     Serial.printf("  Hum  : %.1f %%\n", hum);
 
     // ********* MACHINE A ETATS : BUZZER → VENTILATEUR ************
@@ -247,9 +247,9 @@ void loop() {
   }
 }
 
-// ════════════════════════════════════════════════════════════════
+// ================================================================
 // MESUREURS INCLUANTS GARDE ANTI FREEEZE ET NOUVEAUX CAPTEURS
-// ════════════════════════════════════════════════════════════════
+// ================================================================
 
 // Utilitaire pour le MH-Z19 (Securite de la transmission de message série)
 uint8_t mhzChecksum(const uint8_t *buf) {
@@ -336,9 +336,9 @@ float lireHumidite() {
   return h;
 }
 
-// ════════════════════════════════════════════════════════════════
+// ================================================================
 // LES SECTIONS INTERNET LOCALE  (LE PARLEUR HTTP)
-// ════════════════════════════════════════════════════════════════
+// ================================================================
 void envoyerMesures(float co2, float tvoc, float co, float temp, float hum) {
   // Capture de l'heure exacte (NTP)
   char ts[20] = "";
@@ -381,7 +381,7 @@ void envoyerUneMesure(float co2, float tvoc, float co, float temp, float hum, co
   http.addHeader("X-API-KEY", API_KEY);               // Prouver l'identité de l'ESP32
 
   // Boite structure de réponse
-  JsonDocument doc;
+  StaticJsonDocument<512> doc;
   doc["device_id"] = DEVICE_ID;
   if (!isnan(co2))  doc["co2"]         = co2;       // Ne rajoute l'étiquette QUE si le code n'est pas "Not a number"
   if (!isnan(tvoc)) doc["tvoc"]        = tvoc;
@@ -413,7 +413,7 @@ void ajouterAuBuffer(float co2, float tvoc, float co, float temp, float hum, con
     file = LittleFS.open("/mesures.jsonl", FILE_APPEND);
   }
 
-  JsonDocument doc;
+  StaticJsonDocument<512> doc;
   if (!isnan(co2))  doc["co2"]         = co2;
   if (!isnan(tvoc)) doc["tvoc"]        = tvoc;
   if (!isnan(co))   doc["co"]          = co;
@@ -440,7 +440,7 @@ void envoyerBuffer() {
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-API-KEY", API_KEY);
 
-  JsonDocument doc;
+  StaticJsonDocument<512> doc;
   JsonArray arr = doc.to<JsonArray>();
 
   int lignes_envoyees = 0;
@@ -448,7 +448,7 @@ void envoyerBuffer() {
     String line = file.readStringUntil('\n');
     line.trim();
     if (line.length() > 0) {
-      JsonDocument lineDoc;
+      StaticJsonDocument<256> lineDoc;
       if (deserializeJson(lineDoc, line) == DeserializationError::Ok) {
         JsonObject obj = lineDoc.as<JsonObject>();
         obj["device_id"] = DEVICE_ID;
@@ -477,7 +477,7 @@ void envoyerBuffer() {
 
 // Le Système Flash Police local Buzzer ! 
 void traiterAlertes(String response) {
-  JsonDocument doc;
+  StaticJsonDocument<512> doc;
   if (deserializeJson(doc, response)) return; // Si Flask renvoi un bug du type string HTML 500, le bot ignore pour pas peter sa flash mémoire
   if (!doc.containsKey("alertes")) return;
   JsonObject alertes = doc["alertes"];  
