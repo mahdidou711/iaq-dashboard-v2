@@ -40,15 +40,10 @@ L'architecture est la suivante :
 | `templates/index.html`       | 819    | Interface web du tableau de bord (frontend). |
 | `templates/infos.html`       | 212    | Page educative des capteurs et seuils de sante. |
 | `esp32_iaq/esp32_iaq_v2.ino` | 538    | Code Arduino pour l'ESP32 V2 (firmware actif). |
-| `esp32_iaq/esp32_iaq.ino`    | 527    | Ancien firmware V1 (archive, ne plus utiliser). |
-| `mq7_calibration/mq7_calibration.ino` | 82 | Script de calibration du MQ-7 via ADS1115. |
+| `esp32_iaq/mq7_calibration.ino` | 82  | Script de calibration du MQ-7 via ADS1115. |
 | `requirements.txt`           | 31     | Dependances Python epinglees (Flask, gunicorn...). |
 | `Procfile`                   | 1      | Commande de demarrage pour le Cloud Render. |
 | `.python-version`            | 1      | Force Python 3.11.9 sur Render. |
-| `.gitignore`                 | 7      | Fichiers exclus du depot Git. |
-| `guide-header.tex`           | 112    | En-tete LaTeX pour generer le PDF. |
-| `Guide_IAQ.pdf`              | -      | Ce guide au format PDF imprimable. |
-| `project_audit.md`           | -      | Audit technique detaille du projet. |
 | `README.md`                  | -      | Ce fichier. |
 
 ---
