@@ -11,5 +11,6 @@ Guide_IAQ.pdf
 guide-header.tex
 project_audit.md
 roadmap_implementation.md
+task.md
 *.sqlite
 *.sqlite3
