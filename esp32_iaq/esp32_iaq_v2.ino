@@ -50,8 +50,8 @@ const unsigned long SEND_INTERVAL_MS = 10000;  // Rythme Chrono de 10 secondes e
 #define TX_CO2           17     // Pin série TX pour le capteur NDIR MH-Z19
 #define BUZZER_PIN       15     // Broche en direction du "2N2222" transistor de la cloche
 #define VENTILATOR_PIN   38     // Broche qui actionne de front le MOSFET "IRLZ44N" à ventil'
-#define LED_OK_PIN       25     // OPTION : La led qui dis tout marche bien !
-#define LED_ALERT_PIN    26     // La led de CATASTROPHE Rouge
+#define LED_OK_PIN       -1     // LED verte désactivée : GPIO25 non exposé sur WROOM-1
+#define LED_ALERT_PIN    -1     // LED rouge désactivée : GPIO26 réservé à la flash SPI interne
 
 // --- FORMULES MATHEMATIQUES INVISIBLES POUR GAZ ---
 #define MQ7_R0         10.0   
@@ -99,9 +99,15 @@ void setup() {
   esp_task_wdt_init(WDT_TIMEOUT, true);
   esp_task_wdt_add(NULL);
 
-  // LA REPARATION N1 de MON ANALYSE : Limiter l'écoute I2C
-  Wire.begin();
-  Wire.setTimeOut(1000); 
+  // ── Bus I2C principal (Wire) : CCS811 sur SDA=GPIO8 / SCL=GPIO9 (défauts ESP32-S3) ──
+  Wire.begin();           // SDA=GPIO8, SCL=GPIO9 (broches par défaut du module WROOM-1)
+  Wire.setTimeOut(1000);  // Timeout 1s : évite un blocage infini si un capteur ne répond pas
+
+  // ── Bus I2C secondaire (Wire1) : ADS1115 sur SDA2=GPIO2 / SCL2=GPIO1 ──
+  // L'ADS1115 est câblé sur le DEUXIÈME bus I2C (SCL2/SDA2 du schéma électrique).
+  // On doit donc utiliser Wire1, pas Wire, pour ne pas mélanger les deux capteurs.
+  Wire1.begin(2, 1);      // SDA2=GPIO2, SCL2=GPIO1 (voir schéma électrique)
+  Wire1.setTimeOut(1000);
 
   // Dit à l'ESP quels trous envoie de la puissance (OUTPUT) et lesquels absorbent pour lire (INPUT)
   if (BUZZER_PIN >= 0) { pinMode(BUZZER_PIN, OUTPUT); digitalWrite(BUZZER_PIN, LOW); } // Éteind le Buzzer !
@@ -126,21 +132,21 @@ void setup() {
   CO2Serial.begin(9600, SERIAL_8N1, RX_CO2, TX_CO2);
   Serial.println("[MH-Z19] OK : Capteur CO2 infrarouge demarre");
 
-  // ADS1115 (Convertisseur analogique pour le CO / MQ-7)
-  if (!ads.begin(0x48)) {
-    Serial.println("[ADS1115] ERREUR : Puce I2C Introuvable (Verifiez SDA/SCL)");
+  // ADS1115 (Convertisseur analogique pour le CO / MQ-7) — sur le bus Wire1 (GPIO2/GPIO1)
+  if (!ads.begin(0x48, &Wire1)) {  // 0x48 = adresse I2C (broche ADDR reliée à GND)
+    Serial.println("[ADS1115] ERREUR : Puce introuvable sur Wire1 (Verifiez SDA2=GPIO2, SCL2=GPIO1)");
   } else {
     ads1115_ok = true;
     ads.setGain(GAIN_ONE);
     Serial.println("[ADS1115] OK : Convertisseur ADC demarre");
   }
 
-  // Analyse de démarrage si Ok (Tout est bon et détecté dans l'I2C) - S'il pleure c'est une soudure d'étain de fond
+  // CCS811 (Capteur TVOC) — sur le bus Wire principal (SDA=GPIO8, SCL=GPIO9 par défaut ESP32-S3)
   if (ccs811.begin()) {
-    ccs811_ok = true; 
+    ccs811_ok = true;
     Serial.println("[CCS811] OK : Air Quality Ready !");
   } else {
-    Serial.println("[CCS811] ERREUR. LE FIL EST COUPÉ (Vérifiez qu'il y a I2C (SDA=21, SCL=22) !)");
+    Serial.println("[CCS811] ERREUR. Verifiez le cablage I2C : SDA=GPIO8, SCL=GPIO9 (bus Wire)");
   }
 }
 
@@ -305,8 +311,11 @@ float lireCO() {
   if (tension_pont < 0.001) return NAN;  
 
   // --- RECONSTRUCTION DE LA TENSION AVANT LE PONT DIVISEUR ---
-  // Vous utilisez R1 (Haut) = 2.7k et R2 (Bas) = 4.7k. Ratio d'inversion = (2.7 + 4.7) / 4.7 = 1.574
-  float tension_reelle = tension_pont * ((2.7 + 4.7) / 4.7);
+  // Pont diviseur physique : R1 (en haut) = 10 kOhm, R2 (en bas) = 20 kOhm.
+  // L'ADS1115 mesure la tension AUX BORNES de R2 (= tension_pont).
+  // Pour retrouver la tension réelle sortant du MQ-7 :
+  //   tension_reelle = tension_pont × (R1 + R2) / R2 = tension_pont × (10 + 20) / 20 = × 1.5
+  float tension_reelle = tension_pont * ((10.0 + 20.0) / 20.0);
 
   // Sécurité si la tension reconstruite dépasse 5V (impossible physiquement, mais évite les bugs)
   if (tension_reelle >= 5.0) tension_reelle = 4.99;
