@@ -227,7 +227,7 @@ Les deux tables possedent un index sur `timestamp`.
 - **Machine a etats Buzzer/Ventilateur** : Sequence intelligente :
   IDLE (LED verte) → BUZZING 2s (LED rouge + sirene) → FAN_ON (ventilation).
   Si les valeurs redescendent pendant le buzzer, l'alerte est annulee.
-- **LEDs** : Verte (GPIO 25) = OK. Rouge (GPIO 26) = alerte.
+- **LEDs** : Desactivees par defaut (GPIO 25/26 non utilisables sur WROOM-1).
 
 ### 5.4 Parametres a modifier avant televersement
 
@@ -254,7 +254,7 @@ Avant la premiere utilisation, calibrer le capteur MQ-7 en air pur :
 6. Ouvrir `esp32_iaq_v2.ino`, ligne 57, et remplacer `#define MQ7_R0 10.0`
    par la valeur calculee.
 
-Le script applique la meme formule de pont diviseur (R1=2.7k, R2=4.7k) que
+Le script applique la meme formule de pont diviseur (R1=10k, R2=20k) que
 le firmware principal.
 
 ---
@@ -298,7 +298,7 @@ Ne jamais utiliser une pile 9V. Utiliser un adaptateur secteur >=2A.
 
 **AVERTISSEMENT 2 -- Tension du MQ-7** :
 Le MQ-7 delivre jusqu'a 5V. L'ADS1115 tolere max 4.096V en gain GAIN_ONE.
-Le pont diviseur R1=2.7k / R2=4.7k reduit la tension a max 3.17V.
+Le pont diviseur R1=10 kOhm / R2=20 kOhm reduit la tension a max 3.33V.
 
 **AVERTISSEMENT 3 -- Bus I2C** :
 Si les cables depassent 15 cm, ajouter des pull-up de 4.7 kOhm.
@@ -340,25 +340,25 @@ Adaptateur secteur (9-12V 2A)
 
 Communication UART 9600 bauds.
 
-**ADS1115 (Convertisseur ADC 16 bits)**
+**ADS1115 (Convertisseur ADC 16 bits) -- Bus I2C SECONDAIRE**
 
 | Broche ADS1115 | Connecter a      |
 |:---------------|:-----------------|
 | `VDD`          | ESP32 `3.3V`     |
 | `GND`          | ESP32 `GND`      |
-| `SDA`          | ESP32 `GPIO 21`  |
-| `SCL`          | ESP32 `GPIO 22`  |
+| `SDA`          | ESP32 `GPIO 2` (SDA2 -- bus Wire1) |
+| `SCL`          | ESP32 `GPIO 1` (SCL2 -- bus Wire1) |
 | `A0`           | Sortie pont diviseur (voir MQ-7) |
 | `ADDR`         | GND (adresse 0x48) |
 
-**CCS811 (TVOC) -- Alimenter en 3.3V uniquement**
+**CCS811 (TVOC) -- Bus I2C PRINCIPAL -- Alimenter en 3.3V uniquement**
 
 | Broche CCS811 | Connecter a       |
 |:--------------|:------------------|
 | `VCC`         | ESP32 `3.3V`      |
 | `GND`         | ESP32 `GND`       |
-| `SDA`         | ESP32 `GPIO 21`   |
-| `SCL`         | ESP32 `GPIO 22`   |
+| `SDA`         | ESP32 `GPIO 8` (SDA -- bus Wire, defaut ESP32-S3) |
+| `SCL`         | ESP32 `GPIO 9` (SCL -- bus Wire, defaut ESP32-S3) |
 | `WAKE`        | ESP32 `GND`       |
 
 **DHT22 (Temperature et Humidite)**
@@ -378,14 +378,14 @@ Communication UART 9600 bauds.
 | `A0`        | Voir schema du pont diviseur        |
 
 ```
-MQ-7 A0 ---[R1 = 2.7 kOhms]---+--- ADS1115 A0
-                               |
-                        [R2 = 4.7 kOhms]
-                               |
-                              GND
+MQ-7 A0 ---[R1 = 10 kOhms]---+--- ADS1115 A0
+                              |
+                       [R2 = 20 kOhms]
+                              |
+                             GND
 ```
 
-Tension resultante : (4.7 / (2.7 + 4.7)) x 5V = 3.17V (securise pour l'ADS1115).
+Tension resultante : (20 / (10 + 20)) x 5V = 3.33V (securise pour l'ADS1115).
 
 **Ventilateur 5V (via MOSFET IRLZ44N)**
 
@@ -405,12 +405,13 @@ Le fil positif (+) du ventilateur va sur OUT+ (5V) du LM2596.
 | Collecteur (C)| Fil negatif (-) du buzzer           |
 | Emetteur (E)  | GND commun                          |
 
-**LEDs d'indication (optionnelles)**
+**LEDs d'indication (optionnelles -- desactivees par defaut)**
 
-| LED       | Broche ESP32 | Fonction                              |
-|:----------|:-------------|:--------------------------------------|
-| Verte     | `GPIO 25`    | Clignotement 3x a la connexion WiFi.  |
-| Rouge     | `GPIO 26`    | S'allume en cas d'alerte detectee.     |
+Les LEDs sont desactivees dans le firmware (LED_OK_PIN = -1, LED_ALERT_PIN = -1).
+Raison : GPIO 25 n'est pas expose sur le module WROOM-1, et GPIO 26 est reserve
+a la flash SPI interne (utilisation dangereuse).
+Pour les reactiver, choisir deux GPIOs libres (ex: GPIO 10 et GPIO 11) et
+modifier les defines en haut de esp32_iaq_v2.ino.
 
 ---
 
@@ -490,7 +491,7 @@ Le capteur MQ-7 delivre une tension analogique proportionnelle au gas.
 Le calcul du CO en ppm suit ces etapes :
 
 1. **Lecture** : L'ADS1115 lit la tension apres pont diviseur sur le canal A0.
-2. **Inversion** : `tension_reelle = tension_pont x (2.7 + 4.7) / 4.7`
+2. **Inversion** : `tension_reelle = tension_pont x (10 + 20) / 20` (ratio = 1.5)
 3. **Resistance** : `Rs = RL x (5.0 - tension_reelle) / tension_reelle` (RL = 10 kOhm)
 4. **Ratio** : `ratio = Rs / R0` (R0 = valeur calibree en air pur)
 5. **Concentration** : `log(ppm) = (log10(ratio) - 1.398) / -0.699`

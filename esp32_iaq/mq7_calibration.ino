@@ -1,5 +1,8 @@
 /*
- * SCRIPT DE CALIBRATION DU CAPTEUR MQ-7 VIA ADS1115 (PONT DIVISEUR R1=2.7k / R2=4.7k)
+ * SCRIPT DE CALIBRATION DU CAPTEUR MQ-7 VIA ADS1115
+ * Pont diviseur utilisé : R1 = 10 kOhm (en haut), R2 = 20 kOhm (en bas)
+ * ADS1115 câblé sur le bus I2C secondaire : SDA2=GPIO2, SCL2=GPIO1
+ *
  * Instructions :
  * 1. Branchez votre ESP32 en extérieur ou dans une pièce parfaitement aérée.
  * 2. Téléversez ce code dans l'ESP32.
@@ -20,14 +23,15 @@ void setup() {
   Serial.begin(115200);
   delay(2000);
   
-  Wire.begin();
-  
+  // ADS1115 sur le bus I2C secondaire (SDA2=GPIO2, SCL2=GPIO1) — identique au firmware principal
+  Wire1.begin(2, 1);
+
   Serial.println("\n\n================================================");
   Serial.println("  CALIBRATION DU MQ-7 VIA ADS1115 (PONT DIVISEUR)");
   Serial.println("================================================");
-  
-  if (!ads.begin(0x48)) {
-    Serial.println("ERREUR CRITIQUE: Puce ADS1115 introuvable sur le réseau I2C.");
+
+  if (!ads.begin(0x48, &Wire1)) {
+    Serial.println("ERREUR CRITIQUE: ADS1115 introuvable sur Wire1 (verifiez SDA2=GPIO2, SCL2=GPIO1).");
     while(1) delay(100);
   }
   ads.setGain(GAIN_ONE);
@@ -46,8 +50,8 @@ void setup() {
     // Protection mathématique
     if (tension_pont < 0.001) tension_pont = 0.001;
     
-    // Inversion du pont diviseur (R1 = 2.7k, R2 = 4.7k)
-    float tension_reelle = tension_pont * ((2.7 + 4.7) / 4.7);
+    // Inversion du pont diviseur : R1=10k (haut), R2=20k (bas) → ratio = (10+20)/20 = 1.5
+    float tension_reelle = tension_pont * ((10.0 + 20.0) / 20.0);
 
     // Sécurité
     if (tension_reelle >= 5.0) tension_reelle = 4.99;
