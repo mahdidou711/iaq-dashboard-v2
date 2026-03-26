@@ -163,7 +163,7 @@ void setup() {
   ArduinoOTA.setPassword("iaqadmin");
   ArduinoOTA.begin();
 
-  configTime(3600, 3600, "pool.ntp.org");
+  configTime(3600, 0, "pool.ntp.org"); // UTC+1 Algerie, pas de DST
   dht.begin();
   
   CO2Serial.begin(9600, SERIAL_8N1, RX_CO2, TX_CO2);
