@@ -6,12 +6,15 @@ Tableau de bord de qualité de l'air intérieur. Destiné à la copine du dével
 (niveau technique bas) : le code doit rester simple, lisible, et commenté en français
 pédagogique. Pas d'over-engineering.
 
-Architecture complète :
+Architecture complète (double backend) :
 ```
-ESP32-S3 → HTTPS POST JSON → Flask/app.py → SQLite (iaq.db)
-                                    ↓
-Navigateur ← HTML/Chart.js/Socket.IO ← /  (dashboard)
-Gmail ← email automatique si seuil critique
+ESP32-S3 → HTTPS POST JSON ──┬──→ Flask/app.py (Mahdi) → SQLite (iaq.db)
+                              │        ↓
+                              │   Navigateur ← HTML/Chart.js/Socket.IO
+                              │   Gmail ← email automatique si seuil critique
+                              │
+                              └──→ Backend Nini (Android app)
+                                   https://iaq-backend.onrender.com
 ```
 
 ---
@@ -20,10 +23,12 @@ Gmail ← email automatique si seuil critique
 
 | Fichier | Rôle |
 |---------|------|
-| `app.py` | Serveur Flask — backend complet |
+| `app.py` | Serveur Flask — backend complet (Mahdi) |
 | `templates/index.html` | Dashboard 3 onglets (Chart.js + Socket.IO) |
 | `templates/infos.html` | Page éducative capteurs et seuils |
-| `esp32_iaq/esp32_iaq_v2.ino` | Firmware ESP32 actif (V2) |
+| `esp32_iaq/esp32_iaq_fusion.ino` | **Firmware ACTIF** — fusion V2 + Nini (double backend) |
+| `esp32_iaq/esp32_iaq_v2.ino` | Firmware V2 original (Mahdi seul, archivé) |
+| `esp32_iaq/esp32_iaq_nini.ino` | Firmware Nini original (référence, archivé) |
 | `esp32_iaq/mq7_calibration.ino` | Script calibration R0 MQ-7 |
 | `requirements.txt` | Dépendances Python épinglées |
 | `Procfile` | Démarrage gunicorn pour Render |
@@ -71,11 +76,43 @@ Gmail ← email automatique si seuil critique
 - Ne jamais utiliser `vout` directement dans la formule sans inversion
 
 ### Seuils avec hystérésis (ON/OFF séparés)
+
+**Seuils firmware fusion (Nini — plus sensibles pour la maison) :**
 - CO2 : ON=2000 / OFF=1800 ppm
-- TVOC : ON=600 / OFF=450 ppb
-- CO : ON=35 / OFF=25 ppm
-- Température : ON=35 / OFF=32 °C
-- Humidité : ON=75 / OFF=65 %
+- TVOC : ON=220 / OFF=150 ppb
+- CO : ON=25 / OFF=18 ppm
+- Température : ON=27 / OFF=25 °C
+- Humidité : ON=60 / OFF=55 %
+
+**Seuils backend app.py (alertes email, inchangés) :**
+- CO2 : warn=1000 / alert=2000 ppm
+- TVOC : warn=300 / alert=600 ppb
+- CO : warn=9 / alert=35 ppm
+- Température : warn=28 / alert=35 °C
+- Humidité : warn=60 / alert=75 %
+
+### Machine à états buzzer/ventilateur (logique Nini)
+- IDLE → seuil ON dépassé → BUZZING (buzzer 2s)
+- BUZZING → 2s écoulées → FAN_ON (ventilateur allumé, buzzer éteint)
+- FAN_ON → tout sous seuil OFF → IDLE (tout éteint)
+- Si valeurs redescendent pendant BUZZING → retour direct IDLE
+- Contrôle **local uniquement** — `traiterAlertes()` ne touche plus au buzzer
+
+### Double backend (fusion uniquement)
+- `SERVER_URL_1` = `https://iaq-maison.onrender.com/api/mesures` (Mahdi — dashboard)
+- `SERVER_URL_2` = `https://iaq-backend.onrender.com/api/mesures` (Nini — app Android)
+- Health check uniquement sur serveur 1 ; buffer LittleFS envoyé aux deux serveurs
+- JSON envoyé : co2, tvoc, co, temperature, humidite, timestamp, fan, buzzer, etat_air
+
+### Calibration dynamique R0 MQ-7 (fusion uniquement)
+- 60 secondes de calibration au démarrage (`R0_CAL_MS = 60000`)
+- Pendant la calibration, `lireCO()` retourne NAN
+- R0 = moyenne des Rs mesurés pendant les 60s
+- Remplace le R0 fixe (`#define MQ7_R0 10.0`) de la V2
+
+### NTP — Timezone Algérie
+- `configTime(3600, 0, "pool.ntp.org")` → UTC+1 fixe, PAS de DST
+- Ne jamais mettre `3600` en deuxième argument (heure d'été inexistante en Algérie)
 
 ---
 
@@ -158,7 +195,7 @@ Après toute modification significative, mettre à jour dans l'ordre :
 ## Lancer le projet en local (test)
 
 ```bash
-cd /home/mahdidou711/linux_data/Projets/iaq_project
+cd /home/mahdidou711/Projets/iaq_project
 source venv/bin/activate
 python app.py
 # Puis http://localhost:5000

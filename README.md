@@ -13,22 +13,30 @@ Ce projet permet de mesurer cinq parametres de l'air en temps reel :
 | Parametre   | Capteur    | Unite | Seuil Activation | Seuil Desactivation |
 |:------------|:-----------|:------|:-----------------|:--------------------|
 | CO2         | MH-Z19     | ppm   | 2000              | 1800               |
-| TVOC        | CCS811     | ppb   | 600               | 450                |
-| CO          | MQ-7 (via ADS1115) | ppm   | 35        | 25                 |
-| Temperature | DHT22      | C     | 35                | 32                 |
-| Humidite    | DHT22      | %     | 75                | 65                 |
+| TVOC        | CCS811     | ppb   | 220               | 150                |
+| CO          | MQ-7 (via ADS1115) | ppm   | 25        | 18                 |
+| Temperature | DHT22      | C     | 27                | 25                 |
+| Humidite    | DHT22      | %     | 60                | 55                 |
+
+Note : ces seuils sont ceux du firmware fusion (plus sensibles pour la maison).
+Le backend app.py a ses propres seuils (warn/alert) pour les emails.
 
 L'architecture est la suivante :
 
-1. **L'ESP32-S3** (microcontroleur) lit les capteurs toutes les 10 secondes.
-2. Il envoie les donnees en **HTTPS POST** (JSON) vers le serveur Cloud (Render).
+1. **L'ESP32-S3** (microcontroleur) lit les capteurs toutes les 2 secondes
+   et envoie les donnees toutes les 5 secondes.
+2. Il envoie en **HTTPS POST** (JSON) vers **deux serveurs Render** simultanement :
+   - `https://iaq-maison.onrender.com` — dashboard web (Mahdi)
+   - `https://iaq-backend.onrender.com` — application Android (Nini)
 3. **Le serveur Flask** (`app.py`) valide, stocke dans SQLite, detecte les alertes,
    et envoie un **email Gmail** si un seuil critique est depasse.
 4. **Le tableau de bord web** (`index.html`) affiche les graphiques en temps reel
    via Chart.js et WebSocket (Socket.IO).
 5. **La page educative** (`infos.html`) explique chaque capteur et ses seuils de sante.
 6. En cas de panne WiFi, les donnees sont **sauvegardees sur la flash interne** (LittleFS)
-   et envoyees automatiquement au retour de la connexion.
+   et envoyees automatiquement aux deux serveurs au retour de la connexion.
+7. **Calibration automatique** du MQ-7 : R0 calcule dynamiquement pendant les 60
+   premieres secondes apres le demarrage (plus besoin de calibration manuelle).
 
 ---
 
@@ -36,10 +44,12 @@ L'architecture est la suivante :
 
 | Fichier / Dossier            | Lignes | Role |
 |:-----------------------------|:-------|:-----|
-| `app.py`                     | 641    | Serveur web Python Flask (backend). |
+| `app.py`                     | 824    | Serveur web Python Flask (backend Mahdi). |
 | `templates/index.html`       | 819    | Interface web du tableau de bord (frontend). |
 | `templates/infos.html`       | 212    | Page educative des capteurs et seuils de sante. |
-| `esp32_iaq/esp32_iaq_v2.ino` | 538    | Code Arduino pour l'ESP32 V2 (firmware actif). |
+| `esp32_iaq/esp32_iaq_fusion.ino` | 549 | **Firmware actif** — fusion V2 + Nini (double backend). |
+| `esp32_iaq/esp32_iaq_v2.ino` | 547    | Firmware V2 original Mahdi (archive). |
+| `esp32_iaq/esp32_iaq_nini.ino` | 570  | Firmware Nini original (archive / reference). |
 | `esp32_iaq/mq7_calibration.ino` | 82  | Script de calibration du MQ-7 via ADS1115. |
 | `requirements.txt`           | 31     | Dependances Python epinglees (Flask, gunicorn...). |
 | `Procfile`                   | 1      | Commande de demarrage pour le Cloud Render. |
@@ -167,87 +177,121 @@ Les deux tables possedent un index sur `timestamp`.
 
 ---
 
-## 5. Liste complete des fonctions du firmware (`esp32_iaq_v2.ino`)
+## 5. Liste complete des fonctions du firmware fusion (`esp32_iaq_fusion.ino`)
 
-### 5.1 Bibliotheques (11)
+Le firmware fusion combine la robustesse de la V2 (watchdog, OTA, LittleFS, NTP,
+ArduinoJson) avec les ameliorations de Nini (calibration R0 dynamique, lecture
+CCS811 correcte, scan I2C, seuils sensibles, machine a etats locale).
+
+### 5.1 Bibliotheques (12)
 
 | Bibliotheque          | Role |
 |:----------------------|:-----|
+| `Arduino.h`           | Base Arduino (inclus explicitement). |
 | `WiFi.h`              | Connexion reseau WiFi. |
 | `WiFiClientSecure.h`  | Connexion HTTPS chiffree (Render). |
 | `HTTPClient.h`        | Requetes HTTP POST / GET. |
 | `ArduinoJson.h`       | Serialisation / deserialisation JSON. |
-| `Adafruit_CCS811.h`   | Capteur TVOC via I2C. |
+| `Adafruit_CCS811.h`   | Capteur TVOC via I2C (avec `available()` + `readData()`). |
 | `Adafruit_ADS1X15.h`  | Convertisseur ADC 16 bits pour MQ-7 via I2C. |
 | `DHT.h`               | Capteur Temperature / Humidite DHT22. |
 | `esp_task_wdt.h`      | Watchdog Timer (15 secondes). |
-| `time.h`              | Horloge NTP (synchronisation mondiale). |
+| `time.h`              | Horloge NTP (UTC+1 Algerie, pas de DST). |
 | `LittleFS.h`          | Stockage flash non-volatile (buffer hors-ligne). |
 | `ArduinoOTA.h`        | Mise a jour du firmware par WiFi (OTA). |
 
 ### 5.2 Fonctions
 
-| Fonction                | Ligne  | Role |
-|:------------------------|:-------|:-----|
-| `setup()`               | 82     | Init : LittleFS, WDT, I2C, Pins, WiFi, HTTPS, OTA, NTP, MH-Z19, ADS1115, CCS811. |
-| `loop()`                | 145    | WDT reset → OTA → WiFi → Lecture 5 capteurs → Ventilateur → Envoi. |
-| `mhzChecksum()`         | 204    | Calcul du checksum UART pour le protocole MH-Z19. |
-| `lireCO2()`             | 211    | Protocole MH-Z19 : cmd 0x86 → 9 octets → checksum → CO2 ppm. |
-| `lireTVOC()`            | 241    | CCS811 via I2C. |
-| `lireCO()`              | 247    | ADS1115 A0 → inversion pont diviseur → courbe MQ-7 → CO ppm. |
-| `lireTemperature()`     | 275    | DHT22. |
-| `lireHumidite()`        | 282    | DHT22. |
-| `envoyerMesures()`      | 292    | Horodatage NTP → health check → envoi ou buffer LittleFS. |
-| `verifierServeur()`     | 313    | GET /api/health via HTTPS (timeout 3s). |
-| `envoyerUneMesure()`    | 328    | POST JSON via HTTPS (timeout 5s), parse alertes. |
-| `ajouterAuBuffer()`     | 356    | Ecrit en JSONL dans /mesures.jsonl (max 50 Ko). |
-| `envoyerBuffer()`       | 381    | Batch POST de max 50 mesures depuis LittleFS via HTTPS. |
-| `traiterAlertes()`      | 430    | Parse reponse serveur → Buzzer 3 bips + LEDs. |
-| `gererWiFi()`           | 461    | Reconnexion non-bloquante toutes les 30s. |
-| `connecterWiFi()`       | 473    | Connexion initiale (40 tentatives, 20s max). |
+| Fonction                | Role |
+|:------------------------|:-----|
+| `scanI2C()`             | Scan des bus I2C au demarrage (diagnostic). |
+| `setup()`               | Init : LittleFS, WDT, 2x I2C, Pins, WiFi, OTA, NTP, capteurs. |
+| `loop()`                | WDT → OTA → WiFi → Polling 2s (capteurs + alertes) → Envoi 5s. |
+| `mhzChecksum()`         | Checksum UART pour protocole MH-Z19. |
+| `lireCO2()`             | MH-Z19 : cmd 0x86 → checksum → CO2 ppm. |
+| `lireTVOC()`            | CCS811 : `available()` → `readData()` → `getTVOC()` (cap 1187 ppb). |
+| `lireCO()`              | ADS1115 → pont diviseur x1.5 → calibration R0 60s → courbe MQ-7. |
+| `lireTemperature()`     | DHT22 → `readTemperature()`. |
+| `lireHumidite()`        | DHT22 → `readHumidity()`. |
+| `envoyerMesures()`      | NTP timestamp → health check → buffer ou envoi double serveur. |
+| `verifierServeur()`     | GET /api/health (timeout 3s). |
+| `envoyerUneMesure()`    | POST JSON vers un serveur (flag `analyserReponse`). |
+| `ajouterAuBuffer()`     | Append JSONL dans /mesures.jsonl (max 50 Ko). |
+| `envoyerBuffer()`       | Batch POST max 50 mesures (flag `supprimerApres`). |
+| `traiterAlertes()`      | Parse reponse serveur → LEDs uniquement (pas de buzzer). |
+| `gererWiFi()`           | Reconnexion non-bloquante toutes les 30s. |
+| `connecterWiFi()`       | Connexion initiale (40 tentatives, 20s max). |
 
-### 5.3 Mecanismes de securite integres
+### 5.3 Differences cles entre fusion et V2
+
+| Aspect | V2 (ancien) | Fusion (actif) |
+|:-------|:------------|:---------------|
+| Polling / Envoi | 10s combine | 2s polling, 5s envoi (separes) |
+| Serveurs | 1 seul (local ou Render) | 2 Render (Mahdi + Nini) |
+| Calibration MQ-7 | R0 fixe (`#define MQ7_R0 10.0`) | R0 dynamique 60s au boot |
+| Lecture CCS811 | `getTVOC()` directement | `available()` + `readData()` + cap 1187 |
+| Seuils | CLAUDE.md originaux | Nini (plus sensibles) |
+| Buzzer | Machine etats + bips serveur | Machine etats locale uniquement |
+| NTP | `configTime(3600, 3600)` (DST bug) | `configTime(3600, 0)` (correct) |
+| JSON envoye | co2, tvoc, co, temp, hum | + fan, buzzer, etat_air |
+| Scan I2C | Non | Oui (diagnostic au boot) |
+| Validation seuils | Sans verifier NAN/r0Ready | Verifie capteur valide avant comparaison |
+
+### 5.4 Mecanismes de securite integres
 
 - **Watchdog (15s)** : Redemarre l'ESP32 si le code se bloque.
 - **Timeout I2C (1s)** : Empeche le bus I2C de bloquer indefiniment.
 - **HTTPS** : Communication chiffree via WiFiClientSecure + setInsecure().
 - **Cle API** : Header X-API-KEY sur chaque requete POST.
 - **Buffer LittleFS (50 Ko)** : Sauvegarde flash non-volatile si serveur hors-ligne.
+  Envoye aux deux serveurs au retour de connexion.
 - **OTA** : Mise a jour sans fil (mot de passe : `iaqadmin`).
-- **NTP** : Horodatage autonome, meme hors-ligne.
+- **NTP** : Horodatage autonome UTC+1 (Algerie, pas de DST).
 - **Calibration croisee** : `setEnvironmentalData(hum, temp)` ameliore CCS811.
 - **Valeurs NAN** : Les champs invalides sont omis du JSON.
-- **Hysteresis** : Seuils de desactivation plus bas que les seuils d'activation
-  pour eviter le clignotement du ventilateur (ex: active a 2000 ppm, desactive a 1800 ppm).
-- **Machine a etats Buzzer/Ventilateur** : Sequence intelligente :
-  IDLE (LED verte) → BUZZING 2s (LED rouge + sirene) → FAN_ON (ventilation).
-  Si les valeurs redescendent pendant le buzzer, l'alerte est annulee.
+- **Validation capteurs** : Seuils verifies uniquement si capteur valide et calibre.
+- **TVOC fallback** : Garde la derniere valeur valide si CCS811 rate un cycle.
+- **Hysteresis** : Seuils ON/OFF separes pour eviter le clignotement.
+- **Machine a etats locale** : IDLE → BUZZING 2s → FAN_ON → retour IDLE.
+  Controle uniquement local, `traiterAlertes()` ne touche plus au buzzer.
 - **LEDs** : Desactivees par defaut (GPIO 25/26 non utilisables sur WROOM-1).
 
-### 5.4 Parametres a modifier avant televersement
+### 5.5 Parametres a modifier avant televersement
 
-| Variable         | Ligne | Valeur par defaut              | Ce qu'il faut mettre |
+| Variable         | Ligne | Valeur actuelle                | Ce qu'il faut mettre |
 |:-----------------|:------|:-------------------------------|:---------------------|
-| `WIFI_SSID`      | 32    | `"ton_wifi"`                   | Le nom du reseau WiFi. |
-| `WIFI_PASSWORD`  | 33    | `"ton_mot_de_passe"`           | Le mot de passe WiFi. |
-| `SERVER_URL`     | 37    | `"http://192.168.1.100:5000/api/mesures"` | `"https://votre-nom.onrender.com/api/mesures"` |
-| `HEALTH_URL`     | 38    | `"http://192.168.1.100:5000/api/health"`  | `"https://votre-nom.onrender.com/api/health"` |
-| `MQ7_R0`         | 57    | `10.0`                         | Valeur calculee par `mq7_calibration.ino`. |
-| `DEVICE_ID`      | 41    | `"esp32-salon"`                | Un nom pour identifier le boitier. |
+| `WIFI_SSID`      | 25    | `"IdoomFibre_AT3P2evDS_EXT"`   | Le nom du reseau WiFi. |
+| `WIFI_PASSWORD`  | 26    | `"zevwhF9e"`                   | Le mot de passe WiFi. |
+| `SERVER_URL_1`   | 29    | `"https://iaq-maison.onrender.com/api/mesures"` | Dashboard Mahdi. |
+| `SERVER_URL_2`   | 30    | `"https://iaq-backend.onrender.com/api/mesures"` | Backend Nini. |
+| `HEALTH_URL_1`   | 31    | `"https://iaq-maison.onrender.com/api/health"` | Health check serveur 1. |
 
 ---
 
-## 6. Calibration du MQ-7 (`mq7_calibration.ino`)
+## 6. Calibration du MQ-7
 
-Avant la premiere utilisation, calibrer le capteur MQ-7 en air pur :
+### 6.1 Calibration automatique (firmware fusion)
+
+Le firmware fusion calibre automatiquement le MQ-7 pendant les **60 premieres
+secondes** apres le demarrage. Pendant ce temps, le capteur CO affiche "NAN"
+sur le moniteur serie. Apres 60s, la valeur R0 est calculee et les mesures
+de CO commencent.
+
+Pour une calibration optimale : demarrer l'ESP32 dans une **piece bien aeree**
+ou en exterieur. La valeur R0 calculee est affichee dans le moniteur serie.
+
+### 6.2 Calibration manuelle (`mq7_calibration.ino`)
+
+Pour une calibration plus precise (script dedie) :
 
 1. Brancher l'ESP32 avec l'ADS1115 et le MQ-7 en **exterieur ou piece bien aeree**.
-2. Ouvrir `mq7_calibration/mq7_calibration.ino` dans Arduino IDE.
+2. Ouvrir `esp32_iaq/mq7_calibration.ino` dans Arduino IDE.
 3. Televerser et ouvrir le Moniteur Serie (115200 bauds).
 4. Attendre 60 secondes (60 lectures).
-5. Copier la valeur **R0** affichee a la fin.
-6. Ouvrir `esp32_iaq_v2.ino`, ligne 57, et remplacer `#define MQ7_R0 10.0`
-   par la valeur calculee.
+5. La valeur **R0** est affichee a la fin.
+
+Note : le firmware fusion n'a pas besoin de cette etape (calibration automatique),
+mais le script reste utile pour verifier la valeur R0 en air pur.
 
 Le script applique la meme formule de pont diviseur (R1=10k, R2=20k) que
 le firmware principal.
@@ -426,20 +470,22 @@ modifier les defines en haut de esp32_iaq_v2.ino.
 
 ### 10.2 Configuration
 
-1. Ouvrir `esp32_iaq/esp32_iaq_v2.ino` dans Arduino IDE.
-2. Modifier les variables obligatoires (voir section 5.4).
-3. Menu Outils > Type de carte : `ESP32S3 Dev Module`.
-4. Menu Outils > Port : choisir le port COM (ex: COM3).
-5. Cliquer sur `Telecharger` (fleche droite).
+1. Ouvrir `esp32_iaq/esp32_iaq_fusion.ino` dans Arduino IDE.
+2. Modifier `WIFI_SSID` et `WIFI_PASSWORD` (lignes 25-26).
+3. Verifier les URLs des serveurs Render (lignes 29-31).
+4. Menu Outils > Type de carte : `ESP32S3 Dev Module`.
+5. Menu Outils > Port : choisir le port COM (ex: COM3).
+6. Cliquer sur `Telecharger` (fleche droite).
 
 ### 10.3 Verification
 
 Ouvrir le Moniteur Serie (115200 bauds). L'ESP32 doit afficher :
-- `[LittleFS] Disque dur OK.`
-- `[MH-Z19] OK : Capteur CO2 infrarouge demarre`
-- `[ADS1115] OK : Convertisseur ADC demarre`
-- `[CCS811] OK : Air Quality Ready !`
-- Des mesures toutes les 10 secondes.
+- `[LittleFS] OK.`
+- `Scan Wire (CCS811)` + `Scan Wire1 (ADS1115)` avec adresses I2C trouvees
+- `[ADS1115] OK`
+- `[CCS811] OK`
+- Pendant 60s : calibration MQ-7 (CO affiche NAN)
+- Puis mesures toutes les 2 secondes, envoi toutes les 5 secondes.
 
 ### 10.4 Mises a jour OTA (sans cable)
 
@@ -512,12 +558,14 @@ Le calcul du CO en ppm suit ces etapes :
 ## 14. Ameliorations realisees (Roadmap completee)
 
 Toutes les ameliorations de la roadmap ont ete implementees sauf le Deep Sleep
-(incompatible avec le pré-chauffage MQ-7 et MH-Z19) :
+(incompatible avec le pre-chauffage MQ-7 et MH-Z19).
+
+Le firmware fusion ajoute les ameliorations suivantes par rapport a la V2 :
 
 1. Correction bugs bloquants
 2. Watchdog Timer (15s)
 3. Timeout I2C (1s)
-4. Seuils ventilateur en constantes
+4. Seuils ventilateur en constantes (avec hysteresis)
 5. Validation donnees backend
 6. Cle API (X-API-KEY)
 7. Rate limiting (flask-limiter)
@@ -530,7 +578,7 @@ Toutes les ameliorations de la roadmap ont ete implementees sauf le Deep Sleep
 14. Export CSV
 15. Page educative capteurs
 16. WebSocket temps reel (Socket.IO)
-17. Horloge NTP autonome
+17. Horloge NTP autonome (UTC+1 Algerie, pas de DST)
 18. Stockage persistant LittleFS
 19. Constantes nommees pour seuils
 20. Script de calibration MQ-7 dedie
@@ -542,3 +590,10 @@ Toutes les ameliorations de la roadmap ont ete implementees sauf le Deep Sleep
 26. Unification des seuils
 27. Notifications email Gmail
 28. Hebergement Cloud Render
+29. **Fusion V2 + Nini** : double backend, calibration R0 dynamique
+30. **Scan I2C** au demarrage (diagnostic)
+31. **Lecture CCS811 corrigee** : `available()` + `readData()` + cap 1187 ppb
+32. **Validation capteurs** avant comparaison seuils (NAN, r0Ready)
+33. **Machine a etats locale** : buzzer/ventilateur sans dependance serveur
+34. **TVOC fallback** : garde la derniere valeur valide si CCS811 rate
+35. **NTP corrige** : pas de DST pour l'Algerie
