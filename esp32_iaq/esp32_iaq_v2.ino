@@ -125,7 +125,7 @@ void setup() {
   ArduinoOTA.begin();                  // Démarre l'écoute !
   // -------------------------------------
 
-  configTime(3600, 3600, "pool.ntp.org"); // Synchronisation de l'heure sur serveur mondial NTP
+  configTime(3600, 0, "pool.ntp.org"); // UTC+1 Algerie, pas de DST
   dht.begin();      // Demarre le thermometre
   
   // MH-Z19 (Capteur de CO2 dédié)
