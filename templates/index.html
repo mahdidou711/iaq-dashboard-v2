@@ -608,10 +608,14 @@ if (btnSeed) {
     btn.textContent = '...';
     btn.disabled = true;
     try {
-      const resp = await fetch('/api/seed', { method: 'POST' });
+      const cle = prompt('Cle administrateur :');
+      if (!cle) { btn.textContent = 'Donnees test'; btn.disabled = false; return; }
+      const resp = await fetch('/api/seed', { method: 'POST', headers: { 'X-API-KEY': cle } });
       const data = await resp.json();
       if (data.statut === 'ok') {
         fetchAndUpdate();
+      } else {
+        alert('Cle incorrecte ou action refusee.');
       }
     } catch (e) { console.error(e); }
     btn.textContent = 'Donnees test';
@@ -621,11 +625,15 @@ if (btnSeed) {
 
 document.getElementById('btn-clear').addEventListener('click', async () => {
   if (!confirm('Supprimer TOUTES les donnees (mesures + alertes) ?')) return;
+  const cle = prompt('Cle administrateur :');
+  if (!cle) return;
   try {
-    const resp = await fetch('/api/clear', { method: 'POST' });
+    const resp = await fetch('/api/clear', { method: 'POST', headers: { 'X-API-KEY': cle } });
     const data = await resp.json();
     if (data.statut === 'ok') {
       fetchAndUpdate();
+    } else {
+      alert('Cle incorrecte ou action refusee.');
     }
   } catch (e) { console.error(e); }
 });
