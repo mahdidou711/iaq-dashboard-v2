@@ -14,3 +14,22 @@ roadmap_implementation.md
 task.md
 *.sqlite
 *.sqlite3
+
+# Local AI assistant files
+CLAUDE.md
+.codex/
+.agents/
+.claude/
+
+# Local runtime data
+*.db
+*.sqlite
+
+# Local generated documents
+*.pdf
+
+# Python local environment
+venv/
+.venv/
+__pycache__/
+*.pyc
