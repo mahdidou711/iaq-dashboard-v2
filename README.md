@@ -1,5 +1,8 @@
 # IAQ V2 -- Indoor Air Quality Dashboard
 
+[![Python CI](https://github.com/mahdidou711/iaq-dashboard-v2/actions/workflows/ci.yml/badge.svg)](https://github.com/mahdidou711/iaq-dashboard-v2/actions/workflows/ci.yml)
+
+
 Complete step by step guide. This document is intended for anyone who wants
 to deploy and operate this air quality monitoring system,
 even without prior experience in programming or electronics.
