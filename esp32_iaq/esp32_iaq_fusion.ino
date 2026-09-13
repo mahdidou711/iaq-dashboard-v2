@@ -19,19 +19,25 @@
 #include <ArduinoOTA.h>
 #include <Wire.h>
 
+#include "config_private.h"
+#include "root_ca.h"
+
 #define WDT_TIMEOUT 15  
 
-// --- CONFIGURATION DE VOTRE BOX INTERNET (A CHANGER !) ---
-const char* WIFI_SSID     = "REDACTED_WIFI_SSID_B";
-const char* WIFI_PASSWORD = "REDACTED_WIFI_PASSWORD_B";
+// --- CONFIGURATION PRIVÉE (fichier local ignoré par Git) ---
+static_assert(sizeof(IAQ_WIFI_SSID) > 1, "IAQ_WIFI_SSID ne doit pas être vide");
+static_assert(sizeof(IAQ_WIFI_PASSWORD) > 1, "IAQ_WIFI_PASSWORD ne doit pas être vide");
+static_assert(sizeof(IAQ_INGEST_API_KEY) > 1, "IAQ_INGEST_API_KEY ne doit pas être vide");
+static_assert(sizeof(IAQ_OTA_PASSWORD) > 1, "IAQ_OTA_PASSWORD ne doit pas être vide");
+const char* WIFI_SSID = IAQ_WIFI_SSID;
+const char* WIFI_PASSWORD = IAQ_WIFI_PASSWORD;
+const char* API_KEY = IAQ_INGEST_API_KEY;
 
-// --- CONFIGURATION SERVEURS RENDER (Double Envoi) ---
+// --- SERVEURS RENDER PUBLICS (HTTPS vérifié) ---
 const char* SERVER_URL_1 = "https://iaq-maison.onrender.com/api/mesures";
 const char* SERVER_URL_2 = "https://iaq-backend.onrender.com/api/mesures";
 const char* HEALTH_URL_1 = "https://iaq-maison.onrender.com/api/health";
-
-const char* API_KEY      = "REDACTED_OLD_API_KEY";
-const char* OTA_HOSTNAME = "esp32-salon"; // Nom visible sur le reseau pour OTA
+const char* OTA_HOSTNAME = "esp32-salon";
 
 WiFiClientSecure secureClient;
 
@@ -116,6 +122,7 @@ void traiterAlertes(String response);
 float last_valid_tvoc = NAN; // Dernier TVOC valide (securite si CCS811 rate un cycle)
 void gererWiFi();
 void connecterWiFi();
+bool synchroniserHorlogeTLS();
 
 // SCAN I2C
 void scanI2C(TwoWire &bus, const char* busName) {
@@ -157,13 +164,15 @@ void setup() {
   if (VENTILATOR_PIN >= 0) { pinMode(VENTILATOR_PIN, OUTPUT); digitalWrite(VENTILATOR_PIN, LOW); }
 
   connecterWiFi();
-  secureClient.setInsecure();
+  secureClient.setCACert(IAQ_ROOT_CA);
+  if (!synchroniserHorlogeTLS()) {
+    Serial.println("[TLS] Horloge non synchronisée : envois HTTPS bloqués.");
+  }
 
   ArduinoOTA.setHostname(OTA_HOSTNAME);
-  ArduinoOTA.setPassword("REDACTED_OTA_PASSWORD");
+  ArduinoOTA.setPassword(IAQ_OTA_PASSWORD);
   ArduinoOTA.begin();
 
-  configTime(3600, 0, "pool.ntp.org"); // UTC+1 Algerie, pas de DST
   dht.begin();
   
   CO2Serial.begin(9600, SERIAL_8N1, RX_CO2, TX_CO2);
@@ -367,8 +376,29 @@ float lireTemperature() {
 }
 
 float lireHumidite() {
-  float h = dht.readHumidity();  
+  float h = dht.readHumidity();
   return isnan(h) ? NAN : h;
+}
+
+bool synchroniserHorlogeTLS() {
+  static unsigned long dernierEssaiNtp = 0;
+  static bool ntpDemarre = false;
+  const time_t EPOCH_MINIMUM_VALIDE = 1704067200; // 2024-01-01 UTC
+
+  if (time(nullptr) >= EPOCH_MINIMUM_VALIDE) return true;
+  if (WiFi.status() != WL_CONNECTED) return false;
+  if (ntpDemarre && millis() - dernierEssaiNtp < 30000) return false;
+
+  ntpDemarre = true;
+  dernierEssaiNtp = millis();
+  configTime(3600, 0, "pool.ntp.org", "time.nist.gov");
+
+  const unsigned long debut = millis();
+  while (time(nullptr) < EPOCH_MINIMUM_VALIDE && millis() - debut < 10000) {
+    delay(100);
+    esp_task_wdt_reset();
+  }
+  return time(nullptr) >= EPOCH_MINIMUM_VALIDE;
 }
 
 void envoyerMesures() {
@@ -397,18 +427,32 @@ void envoyerMesures() {
 }
 
 bool verifierServeur(const char* health_url) {
+  if (!synchroniserHorlogeTLS()) {
+    Serial.println("[TLS] Requête refusée : horloge non synchronisée.");
+    return false;
+  }
   HTTPClient http;
   http.setTimeout(3000);  
-  http.begin(secureClient, health_url);
+  if (!http.begin(secureClient, health_url)) {
+    Serial.println("[TLS] Initialisation de la connexion HTTPS impossible.");
+    return false;
+  }
   int code = http.GET();
   http.end();
   return (code == 200);   
 }
 
 void envoyerUneMesure(const char* url, const char* ts, bool analyserReponse) {
+  if (!synchroniserHorlogeTLS()) {
+    Serial.println("[TLS] Mesure non envoyée : horloge non synchronisée.");
+    return;
+  }
   HTTPClient http;
   http.setTimeout(5000);
-  http.begin(secureClient, url);
+  if (!http.begin(secureClient, url)) {
+    Serial.println("[TLS] Initialisation de la connexion HTTPS impossible.");
+    return;
+  }
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-API-KEY", API_KEY);
 
@@ -465,6 +509,10 @@ void ajouterAuBuffer(const char* ts) {
 }
 
 void envoyerBuffer(const char* url, bool supprimerApres) {
+  if (!synchroniserHorlogeTLS()) {
+    Serial.println("[TLS] Buffer conservé : horloge non synchronisée.");
+    return;
+  }
   File file = LittleFS.open("/mesures.jsonl", FILE_READ);
   if (!file || file.size() == 0) {
     if (file) file.close();
@@ -473,7 +521,11 @@ void envoyerBuffer(const char* url, bool supprimerApres) {
 
   HTTPClient http;
   http.setTimeout(10000);
-  http.begin(secureClient, url);
+  if (!http.begin(secureClient, url)) {
+    file.close();
+    Serial.println("[TLS] Initialisation de la connexion HTTPS impossible.");
+    return;
+  }
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-API-KEY", API_KEY);
 
@@ -546,4 +598,3 @@ void connecterWiFi() {
     esp_task_wdt_reset();
   }
 }
-

@@ -1,12 +1,12 @@
 /*
  * ============================================================
  *  PROJET ESP32 : CAPTEUR DE QUALITÉ DE L'AIR INTÉRIEUR (IAQ)
- *  VERSION 2 - ROBUSTE & SPÉCIALE DÉBUTANTS
+ *  VERSION 2 ARCHIVÉE - MODE HTTP LOCAL UNIQUEMENT
  * ============================================================
  *  CE PROGRAMME FAIT PLUSIEURS CHOSES AUTOMATIQUEMENT :
  *  1. Il se connecte en quelques secondes à votre réseau WiFi.
  *  2. Il lit l'air de la pièce (CO2, Température, Humidité, Gaz Toxicol).
- *  3. Il envoie ces donnees vers le serveur (PC ou Cloud).
+ *  3. Il envoie ces données vers un serveur local sur un LAN de confiance.
  *  4. Si l'air est devenu dangereux, il allume un Ventilateur & fait bipper la boite !
  *  5. Si l'ordinateur de l'ESP32 plante, il s'auto-guérit (Watchdog).
  * ============================================================
@@ -14,7 +14,7 @@
 
 // --- INCLUSION DES BIBLIOTHÈQUES (Des plugins magiques rajoutés à la carte mère) ---
 #include <WiFi.h>              // Permet à l'antenne ESP32 d'activer le WiFi
-#include <WiFiClientSecure.h>  // Permet les connexions HTTPS (chiffrées) vers le Cloud
+#include <WiFiClient.h>        // HTTP local en clair : ne pas utiliser sur Internet
 #include <HTTPClient.h>        // Permet d'envoyer les textos (données) au serveur
 #include <ArduinoJson.h>       // Change la donnée pure en version "Site Web Lisible" (le modèle JSON)
 #include <Adafruit_CCS811.h>   // Plugin du Capteur noir de l'air de la marque Adafruit (TVOC)
@@ -25,21 +25,38 @@
 #include <LittleFS.h>          // Disque dur miniature interne
 #include <ArduinoOTA.h>        // Mise à jour du code sans valise (par le WiFi)
 
+#include "config_private.h"
+
 // WDT_TIMEOUT (15): Définit "15 Secondes de vide" maxi avant de déclencher l'auto-Reset
 #define WDT_TIMEOUT 15  
 
-// --- CONFIGURATION DE VOTRE BOX INTERNET (A CHANGER !) ---
-const char* WIFI_SSID     = "REDACTED_WIFI_SSID_A";          // <-- REMPLACER ! Votre "Nom" Livebox/Freebox
-const char* WIFI_PASSWORD = "REDACTED_WIFI_PASSWORD_A";  // <-- REMPLACER ! Votre mot clé internet de base
+// --- CONFIGURATION PRIVÉE (fichier local ignoré par Git) ---
+static_assert(sizeof(IAQ_WIFI_SSID) > 1, "IAQ_WIFI_SSID ne doit pas être vide");
+static_assert(sizeof(IAQ_WIFI_PASSWORD) > 1, "IAQ_WIFI_PASSWORD ne doit pas être vide");
+static_assert(sizeof(IAQ_LOCAL_INGEST_API_KEY) > 1, "IAQ_LOCAL_INGEST_API_KEY ne doit pas être vide");
+static_assert(sizeof(IAQ_OTA_PASSWORD) > 1, "IAQ_OTA_PASSWORD ne doit pas être vide");
 
-// --- CONFIGURATION DU DOSSIER CIBLE WINDOWS 11 ---
-// Modifiez ce fameux numéro (Ex. 192.168.1.5 ...) par 'Adresse IPv4' récupérée sur la console CMD !!
-const char* SERVER_URL = "http://192.168.1.100:5000/api/mesures";
-const char* HEALTH_URL = "http://192.168.1.100:5000/api/health";
-const char* API_KEY    = "REDACTED_OLD_API_KEY";  // Clé d'authentification serveur
+// Compare deux chaînes pendant la compilation (aucun coût à l'exécution).
+constexpr bool iaqMemeChaine(const char* a, const char* b) {
+  return (*a == *b) && (*a == '\0' || iaqMemeChaine(a + 1, b + 1));
+}
+#ifdef IAQ_INGEST_API_KEY
+// Bloque la compilation si la clé LAN est une copie de la clé de production HTTPS.
+static_assert(!iaqMemeChaine(IAQ_LOCAL_INGEST_API_KEY, IAQ_INGEST_API_KEY),
+              "IAQ_LOCAL_INGEST_API_KEY doit être différente de IAQ_INGEST_API_KEY");
+#endif
 
-const char* DEVICE_ID = "esp32-salon"; // Comment s'appellera l'objet sur le graphique ?
-WiFiClientSecure secureClient;  // Client HTTPS sécurisé pour Render
+const char* WIFI_SSID = IAQ_WIFI_SSID;
+const char* WIFI_PASSWORD = IAQ_WIFI_PASSWORD;
+// Clé dédiée au LAN : elle circule en clair en HTTP, donc jamais la clé de production.
+const char* API_KEY = IAQ_LOCAL_INGEST_API_KEY;
+
+// --- ARCHIVE : HTTP EN CLAIR SUR LAN DE CONFIANCE UNIQUEMENT ---
+// La clé locale circule en clair dans ce mode : serveur local de test uniquement.
+const char* SERVER_URL = IAQ_LOCAL_SERVER_URL;
+const char* HEALTH_URL = IAQ_LOCAL_HEALTH_URL;
+const char* DEVICE_ID = "esp32-iaq-v2-local";
+WiFiClient localHttpClient;
 
 const unsigned long SEND_INTERVAL_MS = 10000;  // Rythme Chrono de 10 secondes entre envoies
 
@@ -116,17 +133,16 @@ void setup() {
   if (LED_OK_PIN >= 0) { pinMode(LED_OK_PIN, OUTPUT); digitalWrite(LED_OK_PIN, LOW); }
   if (LED_ALERT_PIN >= 0) { pinMode(LED_ALERT_PIN, OUTPUT); digitalWrite(LED_ALERT_PIN, LOW); }
 
-  connecterWiFi();  // Actionne la fente secrete vers le bas
-  secureClient.setInsecure(); // Désactive la vérif de certificat (suffisant pour Render)
-  
-  // --------- CONFIGURATION OTA ---------
-  ArduinoOTA.setHostname(DEVICE_ID);   // Nom dans votre IDE Arduino
-  ArduinoOTA.setPassword("REDACTED_OTA_PASSWORD");  // Sécurité pour flasher à distance
-  ArduinoOTA.begin();                  // Démarre l'écoute !
-  // -------------------------------------
+  connecterWiFi();
 
-  configTime(3600, 0, "pool.ntp.org"); // UTC+1 Algerie, pas de DST
-  dht.begin();      // Demarre le thermometre
+  // OTA reste protégé par le mot de passe du fichier privé local.
+  ArduinoOTA.setHostname(DEVICE_ID);
+  ArduinoOTA.setPassword(IAQ_OTA_PASSWORD);
+  ArduinoOTA.begin();
+
+  // NTP sert uniquement aux timestamps dans ce mode HTTP local.
+  configTime(3600, 0, "pool.ntp.org");
+  dht.begin();
   
   // MH-Z19 (Capteur de CO2 dédié)
   CO2Serial.begin(9600, SERIAL_8N1, RX_CO2, TX_CO2);
@@ -372,7 +388,7 @@ void envoyerMesures(float co2, float tvoc, float co, float temp, float hum) {
 bool verifierServeur() {
   HTTPClient http;
   http.setTimeout(3000);  
-  http.begin(secureClient, HEALTH_URL);
+  http.begin(localHttpClient, HEALTH_URL);
   int code = http.GET();
   if (code != 200) {
     Serial.printf("[HTTP] Serveur injoignable (Erreur %d: %s)\n", code, http.errorToString(code).c_str());
@@ -385,7 +401,7 @@ bool verifierServeur() {
 void envoyerUneMesure(float co2, float tvoc, float co, float temp, float hum, const char* ts) {
   HTTPClient http;
   http.setTimeout(5000);  // Un temps mort assez long (5 sec)
-  http.begin(secureClient, SERVER_URL);
+  http.begin(localHttpClient, SERVER_URL);
   http.addHeader("Content-Type", "application/json"); // Langue Windows : Bonjour Web Site.
   http.addHeader("X-API-KEY", API_KEY);               // Prouver l'identité de l'ESP32
 
@@ -445,7 +461,7 @@ void envoyerBuffer() {
 
   HTTPClient http;
   http.setTimeout(10000);  // 10 sec en dur limite (Très très large paquet)
-  http.begin(secureClient, SERVER_URL);
+  http.begin(localHttpClient, SERVER_URL);
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-API-KEY", API_KEY);
 

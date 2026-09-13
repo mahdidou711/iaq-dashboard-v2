@@ -21,16 +21,112 @@ Architecture complète :
 
 # ─── IMPORTS : Les "boîtes à outils" utilisées ────────────────────────────────
 import csv                          # Pour construire les fichiers CSV (export tableur)
+import hashlib                      # SHA-256 de la clé API reçue (le serveur ne stocke que l'empreinte)
+import hmac                         # Comparaison sûre des clés API
 import io                           # Pour créer un fichier CSV en mémoire sans écrire sur disque
+import math                         # Validation des nombres finis (rejette NaN et les infinis)
 import os                           # Pour lire les variables d'environnement (DB_PATH, PORT sur Render)
+import re                           # Vérifie le format des empreintes SHA-256 configurées
 import sqlite3                      # Base de données légère intégrée à Python (aucun serveur requis)
 import logging                      # Pour afficher des messages de debug/info/erreur dans la console
+import ssl                          # Contexte TLS vérifié pour SMTP STARTTLS
 from datetime import datetime, timedelta  # Pour manipuler les dates (horodatage, rétention 30j)
 from functools import wraps         # Pour créer des décorateurs Python (ex: @require_api_key)
 import smtplib                      # Pour envoyer des emails via le protocole SMTP (Gmail)
 from email.mime.text import MIMEText           # Pour formater le corps de l'email
 from email.mime.multipart import MIMEMultipart # Pour créer un email avec sujet + corps
 import threading                    # Pour envoyer les emails EN ARRIÈRE-PLAN sans bloquer Flask
+import time                         # Horloge monotone pour le cooldown des emails
+from dotenv import load_dotenv      # type: ignore  # Charge le fichier local .env s'il existe
+
+load_dotenv()
+
+
+def env_bool(name, default=False):
+    """Lit un booléen explicite depuis l'environnement."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"{name} doit valoir true/false, 1/0, yes/no ou on/off")
+
+
+def env_non_negative_int(name, default):
+    """Lit un entier positif ou nul avec une erreur de configuration explicite."""
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError as exc:
+        raise RuntimeError(f"{name} doit être un entier") from exc
+    if value < 0:
+        raise RuntimeError(f"{name} doit être positif ou nul")
+    return value
+
+
+# ─── Configuration privée fournie uniquement par l'environnement ──────────────
+DATABASE = os.environ.get("DB_PATH", "iaq.db")
+# Le serveur ne stocke PAS les clés API brutes, seulement leur empreinte SHA-256
+# (64 caractères hexadécimaux minuscules). L'ESP32 et l'administrateur gardent la clé brute
+# et l'envoient dans X-API-KEY ; le serveur la hache puis compare les deux empreintes.
+INGEST_API_KEY_SHA256 = os.environ.get("IAQ_INGEST_API_KEY_SHA256", "")
+ADMIN_API_KEY_SHA256 = os.environ.get("IAQ_ADMIN_API_KEY_SHA256", "")
+DEBUG = env_bool("FLASK_DEBUG", False)
+EMAIL_ALERTS_ENABLED = env_bool("EMAIL_ALERTS_ENABLED", False)
+EMAIL_SENDER = os.environ.get("EMAIL_SENDER", "")
+EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD", "")
+EMAIL_RECEIVER = os.environ.get("EMAIL_RECEIVER", "")
+EMAIL_ALERT_COOLDOWN_SECONDS = env_non_negative_int("EMAIL_ALERT_COOLDOWN_SECONDS", 900)
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get("ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+DEV_HOST = os.environ.get("DEV_HOST", "127.0.0.1")
+
+
+def validate_runtime_configuration():
+    """Échoue au démarrage si une production serait lancée sans ses secrets requis."""
+    if any("*" in origin for origin in ALLOWED_ORIGINS):
+        raise RuntimeError("ALLOWED_ORIGINS doit contenir des origines explicites, jamais '*'")
+    verifiers = (
+        ("IAQ_INGEST_API_KEY_SHA256", INGEST_API_KEY_SHA256),
+        ("IAQ_ADMIN_API_KEY_SHA256", ADMIN_API_KEY_SHA256),
+    )
+    for name, value in verifiers:
+        # Minuscules uniquement : hexdigest() produit des minuscules, une empreinte en
+        # majuscules ne correspondrait jamais et refuserait tous les clients en silence.
+        if value and not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise RuntimeError(f"{name} doit contenir exactement 64 caractères hexadécimaux minuscules")
+    if INGEST_API_KEY_SHA256 and ADMIN_API_KEY_SHA256 and hmac.compare_digest(
+        INGEST_API_KEY_SHA256.encode("ascii"), ADMIN_API_KEY_SHA256.encode("ascii")
+    ):
+        raise RuntimeError("IAQ_INGEST_API_KEY_SHA256 et IAQ_ADMIN_API_KEY_SHA256 doivent être distincts")
+
+    missing_auth = [name for name, value in verifiers if not value]
+    if missing_auth and not DEBUG:
+        raise RuntimeError(
+            "Configuration de production incomplète : " + ", ".join(missing_auth)
+        )
+
+    if EMAIL_ALERTS_ENABLED:
+        missing_email = [
+            name for name, value in (
+                ("EMAIL_SENDER", EMAIL_SENDER),
+                ("EMAIL_PASSWORD", EMAIL_PASSWORD),
+                ("EMAIL_RECEIVER", EMAIL_RECEIVER),
+            ) if not value
+        ]
+        if missing_email:
+            raise RuntimeError(
+                "Alertes email activées sans configuration complète : "
+                + ", ".join(missing_email)
+            )
+
+
+validate_runtime_configuration()
 
 # ── Flask : Le mini-serveur web ──
 from flask import Flask, request, jsonify, render_template, g, Response # type: ignore
@@ -51,9 +147,15 @@ from flask_compress import Compress  # type: ignore  # Compresse les réponses H
 
 # ─── Création de l'application Flask ──────────────────────────────────────────
 app = Flask(__name__)   # "__name__" dit à Flask que les templates sont dans le même dossier
+app.config["MAX_CONTENT_LENGTH"] = 64 * 1024  # 64 Kio : suffisant pour un lot de 100 mesures
 Compress(app)           # Active la compression Gzip automatique de toutes les réponses
-CORS(app)               # Autorise les requêtes inter-domaines (si le frontal est hébergé ailleurs)
-socketio = SocketIO(app, cors_allowed_origins="*")  # Canal WebSocket temps réel (accepte tous les domaines)
+if ALLOWED_ORIGINS:
+    CORS(app, resources={r"/api/*": {"origins": ALLOWED_ORIGINS}})
+
+socketio_options = {}
+if ALLOWED_ORIGINS:
+    socketio_options["cors_allowed_origins"] = ALLOWED_ORIGINS
+socketio = SocketIO(app, **socketio_options)
 
 # ─── Bouclier anti-spam (Rate Limiter) ────────────────────────────────────────
 # Évite qu'un client envoie des milliers de requêtes par minute et sature le serveur.
@@ -65,22 +167,9 @@ limiter = Limiter(
     storage_uri="memory://"      # Compteurs stockés en RAM (suffisant pour un seul serveur)
 )
 
-# ─── Configuration (modifie directement ici) ──────────────────────────────────
-# Sur Render Cloud, DB_PATH est défini comme variable d'environnement
-# pour pointer vers le disque persistant (/data/iaq.db).
-DATABASE = os.environ.get("DB_PATH", "iaq.db")  # Chemin vers la base de données SQLite
-API_KEY = "REDACTED_OLD_API_KEY"        # Clé secrète : l'ESP32 doit l'envoyer dans chaque POST
-DEBUG = False                       # False = production. True = active /api/seed + logs détaillés
+# ─── Paramètres non secrets ───────────────────────────────────────────────────
 DATA_RETENTION_DAYS = 30            # Les données > 30 jours sont supprimées automatiquement
 SENSOR_OFFLINE_MINUTES = 5          # Si aucune mesure depuis 5 min → capteur affiché "HORS LIGNE"
-
-# ── Configuration Email Gmail ──
-# Pour que les emails fonctionnent : générer un "Mot de passe d'application" Google (16 lettres).
-# Se créer sur : https://myaccount.google.com/apppasswords
-EMAIL_ALERTS_ENABLED = True
-EMAIL_SENDER   = "votre.email@gmail.com"                      # <-- REMPLACER : adresse Gmail "robot"
-EMAIL_PASSWORD = "votre_mot_de_passe_application_google"      # <-- REMPLACER : mot de passe d'appli (16 lettres)
-EMAIL_RECEIVER = "redacted-recipient@example.invalid"                     # <-- REMPLACER : adresse qui reçoit les alertes
 
 # ─── Seuils d'alerte ──────────────────────────────────────────────────────────
 # Ces valeurs sont comparées à chaque mesure reçue.
@@ -218,8 +307,11 @@ def validate_sensor_value(key, value):
     """
     if value is None:
         return None, None  # Valeur absente = autorisé (capteur non branché)
-    if not isinstance(value, (int, float)):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None, f"{key}: valeur non numérique"
+    # Seuls les float peuvent être NaN/infini ; un entier JSON géant ferait planter isfinite().
+    if isinstance(value, float) and not math.isfinite(value):
+        return None, f"{key}: valeur non finie"
     lo, hi = VALID_RANGES[key]
     if value < lo or value > hi:
         return None, f"{key}: {value} hors plage [{lo}, {hi}]"
@@ -243,9 +335,37 @@ def validate_measurement(data):
     return cleaned, errors
 
 
+_MISSING = object()
+TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
+TIMESTAMP_LENGTH = 19
+
+
+def validate_timestamp(value=_MISSING):
+    """Valide l'horodatage ESP32 ou génère celui du serveur si le champ est absent."""
+    if value is _MISSING:
+        return datetime.now().strftime(TIMESTAMP_FORMAT), None
+    if not isinstance(value, str):
+        return None, "timestamp: chaîne attendue au format YYYY-MM-DD HH:MM:SS"
+    if len(value) != TIMESTAMP_LENGTH:
+        return None, "timestamp: longueur ou format invalide"
+    try:
+        parsed = datetime.strptime(value, TIMESTAMP_FORMAT)
+    except ValueError:
+        return None, "timestamp: date invalide, format attendu YYYY-MM-DD HH:MM:SS"
+    if parsed.strftime(TIMESTAMP_FORMAT) != value:
+        return None, "timestamp: format non canonique"
+    return value, None
+
+
 # ─── Envoi d'email d'alerte (en arrière-plan) ─────────────────────────────────
 
-def send_email_alert_async(subject, body):
+_EMAIL_WORKER_LIMIT = 2
+_email_slots = threading.BoundedSemaphore(_EMAIL_WORKER_LIMIT)
+_email_state_lock = threading.Lock()
+_last_email_by_key = {}
+
+
+def send_email_alert_async(subject, body, dedup_key):
     """
     Envoie un email Gmail d'alerte SANS BLOQUER le serveur Flask.
     L'envoi SMTP peut prendre 1-3 secondes. On le fait dans un thread séparé
@@ -253,7 +373,18 @@ def send_email_alert_async(subject, body):
     Si EMAIL_ALERTS_ENABLED = False, la fonction ne fait rien.
     """
     if not EMAIL_ALERTS_ENABLED:
-        return
+        return False
+
+    now = time.monotonic()
+    with _email_state_lock:
+        last_sent = _last_email_by_key.get(dedup_key)
+        if last_sent is not None and now - last_sent < EMAIL_ALERT_COOLDOWN_SECONDS:
+            log.info("Email d'alerte ignoré pendant le cooldown pour %s", dedup_key)
+            return False
+        if not _email_slots.acquire(blocking=False):
+            log.warning("Email d'alerte ignoré : limite de %d envois simultanés", _EMAIL_WORKER_LIMIT)
+            return False
+        _last_email_by_key[dedup_key] = now
 
     def send_email():
         try:
@@ -264,18 +395,31 @@ def send_email_alert_async(subject, body):
             msg['Subject'] = subject
             msg.attach(MIMEText(body, 'plain', 'utf-8'))  # Corps en texte brut, encodage UTF-8
 
-            # Connexion au serveur Gmail via SMTP avec chiffrement TLS (port 587)
-            server = smtplib.SMTP('smtp.gmail.com', 587)
-            server.starttls()                               # Active le chiffrement
-            server.login(EMAIL_SENDER, EMAIL_PASSWORD)      # Authentification Google
-            server.send_message(msg)
-            server.quit()
-            log.info("Email d'alerte envoyé avec succès à %s !", EMAIL_RECEIVER)
+            # STARTTLS avec validation du certificat et du nom d'hôte.
+            tls_context = ssl.create_default_context()
+            with smtplib.SMTP('smtp.gmail.com', 587, timeout=10) as server:
+                server.ehlo()
+                server.starttls(context=tls_context)
+                server.ehlo()
+                server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+                server.send_message(msg)
+            log.info("Email d'alerte envoyé avec succès.")
         except Exception as e:
             log.error("Erreur critique lors de l'envoi de l'email Gmail : %s", e)
+        finally:
+            _email_slots.release()
 
     # daemon=True : le thread est tué automatiquement si le serveur s'arrête
-    threading.Thread(target=send_email, daemon=True).start()
+    try:
+        threading.Thread(target=send_email, daemon=True).start()
+    except Exception:
+        with _email_state_lock:
+            if _last_email_by_key.get(dedup_key) == now:
+                _last_email_by_key.pop(dedup_key, None)
+        _email_slots.release()
+        log.exception("Impossible de démarrer le thread d'alerte email")
+        return False
+    return True
 
 
 # ─── Vérification des seuils d'alerte ─────────────────────────────────────────
@@ -330,7 +474,7 @@ def verifier_alertes(cleaned, ts):
                 f"Veuillez vérifier l'aérateur ou aérer la pièce immédiatement.\n"
                 f"Ce message est généré automatiquement par le serveur IAQ."
             )
-            send_email_alert_async(sujet, corps)
+            send_email_alert_async(sujet, corps, key)
 
     db.commit()
     return status
@@ -341,14 +485,27 @@ def verifier_alertes(cleaned, ts):
 # Placer @require_api_key devant une route bloque les requêtes sans le bon header X-API-KEY.
 # Si la clé est absente ou fausse → réponse 401 (Non autorisé) immédiate.
 
-def require_api_key(f):
-    @wraps(f)  # @wraps conserve le nom de la fonction d'origine (important pour Flask)
-    def decorated_function(*args, **kwargs):
-        if request.headers.get("X-API-KEY") != API_KEY:
-            log.warning("Accès refusé depuis %s (Mauvaise clé API)", request.remote_addr)
-            return jsonify({"erreur": "Non autorisé. Clé API manquante ou invalide."}), 401
-        return f(*args, **kwargs)
-    return decorated_function
+def require_api_key(expected_sha256, role):
+    """Crée un décorateur lié à l'empreinte SHA-256 du rôle demandé (ingestion ou administration)."""
+    def decorator(f):
+        @wraps(f)  # @wraps conserve le nom de la fonction d'origine (important pour Flask)
+        def decorated_function(*args, **kwargs):
+            if not expected_sha256:
+                log.error("Empreinte de clé API %s absente de la configuration", role)
+                return jsonify({"erreur": "Service temporairement indisponible."}), 503
+
+            supplied_key = request.headers.get("X-API-KEY")
+            # On hache la clé BRUTE reçue avant de comparer. Envoyer l'empreinte elle-même
+            # échoue donc : lire la variable Render ne suffit pas pour s'authentifier.
+            if supplied_key is None or not hmac.compare_digest(
+                hashlib.sha256(supplied_key.encode("utf-8")).hexdigest().encode("ascii"),
+                expected_sha256.encode("ascii"),
+            ):
+                log.warning("Accès %s refusé depuis %s", role, request.remote_addr)
+                return jsonify({"erreur": "Non autorisé. Clé API manquante ou invalide."}), 401
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
 
 # ─── Routes (les "pages" du serveur) ──────────────────────────────────────────
 # Chaque @app.route("...") définit une URL que le serveur sait gérer.
@@ -383,7 +540,7 @@ def health():
 
 
 @app.route("/api/mesures", methods=["POST"])
-@require_api_key               # Vérification de la clé API AVANT d'exécuter la fonction
+@require_api_key(INGEST_API_KEY_SHA256, "ingestion")
 @limiter.limit("30 per minute")  # Max 30 POST par minute par IP (protection anti-spam)
 def recevoir_mesures():
     """
@@ -399,6 +556,8 @@ def recevoir_mesures():
 
     if isinstance(data, list):
         return _insert_batch(data)    # Tableau → insertion en lot
+    if not isinstance(data, dict):
+        return jsonify({"erreur": "Le JSON doit être un objet ou un tableau d'objets"}), 400
     return _insert_single(data)       # Objet unique → insertion simple
 
 
@@ -415,8 +574,10 @@ def _insert_single(data):
         log.warning("Validation errors from %s: %s", request.remote_addr, errors)
         return jsonify({"erreur": "Valeurs invalides", "details": errors}), 400
 
-    # Utilise le timestamp NTP envoyé par l'ESP32, ou génère l'heure serveur si absent
-    ts = data.get("timestamp") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # Utilise le timestamp NTP envoyé par l'ESP32, ou génère l'heure serveur si absent.
+    ts, timestamp_error = validate_timestamp(data.get("timestamp", _MISSING))
+    if timestamp_error:
+        return jsonify({"erreur": "Timestamp invalide", "details": [timestamp_error]}), 400
 
     db = get_db()
     db.execute(
@@ -446,6 +607,16 @@ def _insert_batch(data_list):
     if len(data_list) > 100:
         return jsonify({"erreur": "Lot trop grand, max 100 mesures"}), 400
 
+    # Une erreur d'horodatage invalide tout le lot afin d'éviter une insertion partielle ambiguë.
+    timestamp_errors = []
+    for i, item in enumerate(data_list):
+        if isinstance(item, dict):
+            _, timestamp_error = validate_timestamp(item.get("timestamp", _MISSING))
+            if timestamp_error:
+                timestamp_errors.append(f"Element {i}: {timestamp_error}")
+    if timestamp_errors:
+        return jsonify({"erreur": "Timestamp invalide", "details": timestamp_errors}), 400
+
     db = get_db()
     inserted = 0
     errors = []
@@ -463,7 +634,7 @@ def _insert_batch(data_list):
             errors.append(f"Element {i}: {val_errors}")
             continue
 
-        ts = data.get("timestamp") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ts, _ = validate_timestamp(data.get("timestamp", _MISSING))
 
         db.execute(
             """INSERT INTO mesures (timestamp, co2, tvoc, co, temperature, humidite)
@@ -647,6 +818,18 @@ def lire_alertes():
 
 # ─── Export CSV ───────────────────────────────────────────────────────────────
 
+CSV_FORMULA_PREFIXES = ("=", "+", "-", "@")
+
+
+def sanitize_csv_cell(value):
+    """Neutralise les cellules texte qu'un tableur pourrait interpréter comme une formule."""
+    if isinstance(value, str) and value:
+        significant = value.lstrip(" \t\r\n")
+        if value[0] in ("\t", "\r", "\n") or significant.startswith(CSV_FORMULA_PREFIXES):
+            return "'" + value
+    return value
+
+
 @app.route("/api/export")
 def export_data():
     """
@@ -680,8 +863,7 @@ def export_data():
     writer = csv.writer(output)
     writer.writerow(["id", "timestamp", "co2", "tvoc", "co", "temperature", "humidite"])  # En-tête
     for r in rows:
-        writer.writerow([r["id"], r["timestamp"],
-                         r["co2"], r["tvoc"], r["co"], r["temperature"], r["humidite"]])
+        writer.writerow([sanitize_csv_cell(cell) for cell in r])
 
     # Nom de fichier avec date/heure pour éviter les écrasements
     filename = f"iaq_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
@@ -703,7 +885,7 @@ def infos():
 # ─── Vider la base ───────────────────────────────────────────────────────────
 
 @app.route("/api/clear", methods=["POST"])
-@require_api_key  # Protégé : seul quelqu'un avec la bonne clé peut tout effacer
+@require_api_key(ADMIN_API_KEY_SHA256, "administration")
 def clear_data():
     """
     Supprime TOUTES les mesures et alertes de la base de données.
@@ -721,7 +903,7 @@ def clear_data():
 # ─── Données de test ─────────────────────────────────────────────────────────
 
 @app.route("/api/seed", methods=["POST"])
-@require_api_key
+@require_api_key(ADMIN_API_KEY_SHA256, "administration")
 def seed():
     """
     Génère 1440 mesures de test (= 24h à 1 mesure/min) avec données réalistes simulées.
@@ -781,6 +963,12 @@ def seed():
 
 # ─── 404 ─────────────────────────────────────────────────────────────────────
 
+@app.errorhandler(413)
+def request_too_large(error):
+    """Retourne une erreur JSON claire quand un payload dépasse 64 Kio."""
+    return jsonify({"erreur": "Corps de requête trop volumineux (maximum 64 Kio)."}), 413
+
+
 @app.errorhandler(404)
 def not_found(error):
     """
@@ -818,7 +1006,7 @@ atexit.register(shutdown_scheduler) # type: ignore  # Appelé automatiquement à
 if __name__ == "__main__":
     # Nettoyage immédiat au démarrage (au cas où des données trop vieilles traîneraient)
     cleanup_old_data()
-    # PORT est défini par Render automatiquement. En local → 5000.
+    # PORT est défini par Render automatiquement. En local → 5000 sur loopback.
     port = int(os.environ.get("PORT", 5000))
-    # socketio.run() remplace app.run() pour activer le support WebSocket
-    socketio.run(app, host="0.0.0.0", port=port, debug=DEBUG, allow_unsafe_werkzeug=True)
+    # Définir explicitement DEV_HOST=0.0.0.0 pour exposer le serveur de développement au LAN.
+    socketio.run(app, host=DEV_HOST, port=port, debug=DEBUG)

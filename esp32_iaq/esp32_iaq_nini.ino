@@ -22,12 +22,20 @@
 #include <Adafruit_CCS811.h>
 #include <DHT.h>
 #include <math.h>
+#include <time.h>
 
-// ===================== WiFi =====================
-const char* ssid = "REDACTED_WIFI_SSID_B";
-const char* pass = "REDACTED_WIFI_PASSWORD_B";
+#include "config_private.h"
+#include "root_ca.h"
 
-// ===================== Backend Flask / Render =====================
+// ===================== Configuration privée =====================
+static_assert(sizeof(IAQ_WIFI_SSID) > 1, "IAQ_WIFI_SSID ne doit pas être vide");
+static_assert(sizeof(IAQ_WIFI_PASSWORD) > 1, "IAQ_WIFI_PASSWORD ne doit pas être vide");
+static_assert(sizeof(IAQ_INGEST_API_KEY) > 1, "IAQ_INGEST_API_KEY ne doit pas être vide");
+const char* ssid = IAQ_WIFI_SSID;
+const char* pass = IAQ_WIFI_PASSWORD;
+const char* API_KEY = IAQ_INGEST_API_KEY;
+
+// ===================== Backend Flask / Render (HTTPS vérifié) =====================
 const char* SERVER_URL = "https://iaq-backend.onrender.com/api/mesures";
 static const uint32_t SEND_PERIOD_MS = 5000;
 WiFiClientSecure client;
@@ -281,6 +289,26 @@ void manageWiFi() {
   }
 }
 
+bool synchroniserHorlogeTLS() {
+  static unsigned long dernierEssaiNtp = 0;
+  static bool ntpDemarre = false;
+  const time_t EPOCH_MINIMUM_VALIDE = 1704067200; // 2024-01-01 UTC
+
+  if (time(nullptr) >= EPOCH_MINIMUM_VALIDE) return true;
+  if (WiFi.status() != WL_CONNECTED) return false;
+  if (ntpDemarre && millis() - dernierEssaiNtp < 30000) return false;
+
+  ntpDemarre = true;
+  dernierEssaiNtp = millis();
+  configTime(3600, 0, "pool.ntp.org", "time.nist.gov");
+
+  const unsigned long debut = millis();
+  while (time(nullptr) < EPOCH_MINIMUM_VALIDE && millis() - debut < 10000) {
+    delay(100);
+  }
+  return time(nullptr) >= EPOCH_MINIMUM_VALIDE;
+}
+
 // ============================================================
 // Envoi backend
 // ============================================================
@@ -299,11 +327,18 @@ bool sendToFlask(
     Serial.println("WiFi deconnecte, envoi impossible");
     return false;
   }
+  if (!synchroniserHorlogeTLS()) {
+    Serial.println("[TLS] Envoi refusé : horloge non synchronisée");
+    return false;
+  }
 
   HTTPClient http;
-  client.setInsecure();
-  http.begin(client, SERVER_URL);
+  if (!http.begin(client, SERVER_URL)) {
+    Serial.println("[TLS] Initialisation de la connexion HTTPS impossible");
+    return false;
+  }
   http.addHeader("Content-Type", "application/json");
+  http.addHeader("X-API-KEY", API_KEY);
 
   String json = "{";
   json += "\"co2\":" + String(co2) + ",";
@@ -313,7 +348,7 @@ bool sendToFlask(
   json += "\"humidite\":" + String(hum, 1) + ",";
   json += "\"fan\":" + String(fan ? "true" : "false") + ",";
   json += "\"buzzer\":" + String(buzzer ? "true" : "false") + ",";
-  json += "\"etat_air\"😕"" + etat_air + "\"";
+  json += "\"etat_air\":\"" + etat_air + "\"";
   json += "}";
 
   Serial.print("Serveur cible: ");
@@ -326,7 +361,7 @@ bool sendToFlask(
   Serial.print("Code HTTP: ");
   Serial.println(httpResponseCode);
 
-  if (httpResponseCode > 0) {
+  if (httpResponseCode >= 200 && httpResponseCode < 300) {
     String response = http.getString();
     Serial.println("Reponse serveur:");
     Serial.println(response);
@@ -389,6 +424,10 @@ void setup() {
   CO2Serial.begin(9600, SERIAL_8N1, RX_CO2, TX_CO2);
 
   connectWiFi();
+  client.setCACert(IAQ_ROOT_CA);
+  if (!synchroniserHorlogeTLS()) {
+    Serial.println("[TLS] Horloge non synchronisée : envois HTTPS bloqués");
+  }
 
   Serial.print("Serveur Flask/Render: ");
   Serial.println(SERVER_URL);

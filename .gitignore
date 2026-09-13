@@ -1,35 +1,59 @@
-__pycache__/
-*.pyc
-*.db
-venv/
+# Private application configuration
 .env
-*.log
-.vscode/
+.env.*
+!.env.example
 
-# Documentation locale (pas sur GitHub)
+# Private ESP32 configuration (examples remain tracked)
+esp32_iaq/config_private.h
+esp32_iaq/secrets.h
+
+# Python environments, caches, tests and packaging
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Local runtime data
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# PlatformIO / Arduino build output
+.pio/
+.pioenvs/
+.piolibdeps/
+.arduinoIDE/
+*.bin
+*.elf
+*.hex
+*.map
+
+# IDE and operating-system metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local generated/private documentation
 Guide_IAQ.pdf
 guide-header.tex
 project_audit.md
 roadmap_implementation.md
 task.md
-*.sqlite
-*.sqlite3
+*.pdf
 
 # Local AI assistant files
 CLAUDE.md
 .codex/
 .agents/
 .claude/
-
-# Local runtime data
-*.db
-*.sqlite
-
-# Local generated documents
-*.pdf
-
-# Python local environment
-venv/
-.venv/
-__pycache__/
-*.pyc

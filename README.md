@@ -45,132 +45,172 @@ The architecture is as follows:
 
 ## 2. Folder Contents
 
-| File / Folder | Lines | Role |
-|:--------------|:------|:-----|
-| `app.py` | 824 | Python Flask web server (Mahdi backend). |
-| `templates/index.html` | 819 | Web dashboard interface (frontend). |
-| `templates/infos.html` | 212 | Educational page about sensors and health thresholds. |
-| `esp32_iaq/esp32_iaq_fusion.ino` | 549 | **Active firmware** — fusion V2 +  (dual backend). |
-| `esp32_iaq/esp32_iaq_v2.ino` | 547 | Original Mahdi V2 firmware (archive). |
-| `esp32_iaq/esp32_iaq_.ino` | 570 | Original  firmware (archive / reference). |
-| `esp32_iaq/mq7_calibration.ino` | 82 | MQ-7 calibration script via ADS1115. |
-| `requirements.txt` | 31 | Pinned Python dependencies (Flask, gunicorn...). |
-| `Procfile` | 1 | Startup command for Render Cloud. |
-| `.python-version` | 1 | Forces Python 3.11.9 on Render. |
-| `README.md` | - | This file. |
+| File / Folder | Role |
+|:--------------|:-----|
+| `app.py` | Flask backend, SQLite storage, validation, alerts and API routes. |
+| `.env.example` | Fake-only template for local/backend environment variables. |
+| `templates/index.html` | Same-origin web dashboard. |
+| `templates/infos.html` | Educational page about sensors and health thresholds. |
+| `esp32_iaq/esp32_iaq_fusion.ino` | **Active firmware** — verified HTTPS, dual backend, buffering and OTA. |
+| `esp32_iaq/esp32_iaq_v2.ino` | Archived trusted-LAN HTTP firmware; not for Internet or production use. |
+| `esp32_iaq/esp32_iaq_nini.ino` | Reference HTTPS firmware for the second backend. |
+| `esp32_iaq/config_private.example.h` | Fake-only ESP32 private configuration template. |
+| `esp32_iaq/root_ca.h` | Public root CA bundle used for HTTPS verification. |
+| `esp32_iaq/mq7_calibration.ino` | MQ-7 calibration utility. |
+| `tests/` | Backend security regression tests. |
+| `requirements.txt` | Pinned Python dependencies. |
+| `Procfile` | Gunicorn startup command for Render. |
 
 ---
 
 ## 3. Server Installation
 
-### 3.1 Option A: Local Setup (Windows 11)
+### 3.1 Local setup
 
-**Prerequisites:**
-- **Python 3.10 or later**: Download from `https://www.python.org/downloads/`.
-  During installation, make sure to check the **"Add Python to PATH"** box.
+Prerequisite: Python 3.10 or later.
 
-**Step by step startup:**
-
-1. Open File Explorer and navigate to the `iaq_project` folder.
-2. Click in the address bar, type `cmd`, then press Enter.
-3. Create an isolated environment:
+1. Create and activate a virtual environment.
+2. Install dependencies:
 
 ```bash
-python -m venv venv
+python -m pip install -r requirements.txt
 ```
 
-4. Activate the environment:
+3. Create the private local environment file:
 
 ```bash
-venv\Scripts\activate
+# Linux / macOS
+cp .env.example .env
+
+# Windows Command Prompt
+copy .env.example .env
 ```
 
-5. Install the dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-6. Start the server:
+4. Edit **only** `.env`. Choose two distinct local-only raw keys, then set
+   `IAQ_INGEST_API_KEY_SHA256` and `IAQ_ADMIN_API_KEY_SHA256` to their SHA-256
+   verifiers (section 3.3). The example placeholders are fake and authenticate nothing.
+5. Start the server:
 
 ```bash
 python app.py
 ```
 
-7. Open `http://127.0.0.1:5000` in a browser.
+6. Open `http://127.0.0.1:5000`.
 
-IMPORTANT: Do not close the black window. Press Ctrl+C to stop the server.
+The application loads `.env` through `python-dotenv`. `.env` and its variants are
+ignored by Git. Direct execution binds to loopback by default; set `DEV_HOST=0.0.0.0`
+only when you deliberately need LAN access, and use a firewall/trusted network.
 
-### 3.2 Option B: Cloud Hosting (Render)
+### 3.2 Cloud hosting (Render)
 
-The server is preconfigured for Render (free plan).
+Use the existing build command `python -m pip install -r requirements.txt` and the
+`Procfile`. Configure secrets in the Render environment, never in tracked files:
 
-1. Push the code to GitHub.
-2. Create a **Web Service** on `https://dashboard.render.com`.
-3. Connect the GitHub repository.
-4. Configure:
-   - **Runtime**: Python 3
-   - **Build Command**: `pip install -r requirements.txt`
-   - **Start Command**: `gunicorn -k eventlet -w 1 app:app`
-5. (Optional) Add a Disk (`/data`, 1 GB) and the variable `DB_PATH=/data/iaq.db`
-   for a persistent database.
-6. Click **Create Web Service**.
+| Variable | Production guidance |
+|:---------|:--------------------|
+| `IAQ_INGEST_API_KEY_SHA256` | Required SHA-256 verifier of the device-ingestion key. |
+| `IAQ_ADMIN_API_KEY_SHA256` | Required distinct verifier of the key for `/api/clear` and debug-only `/api/seed`. |
+| `DB_PATH` | Persistent SQLite path, for example the mounted Render disk path. |
+| `EMAIL_ALERTS_ENABLED` | `true` only after all email variables are configured; otherwise `false`. |
+| `EMAIL_SENDER` | Dedicated sender account address. |
+| `EMAIL_PASSWORD` | Gmail application password stored only in Render. |
+| `EMAIL_RECEIVER` | Alert recipient address. |
+| `EMAIL_ALERT_COOLDOWN_SECONDS` | Per-sensor email cooldown; default `900`. |
+| `ALLOWED_ORIGINS` | Empty for same-origin; otherwise a comma-separated exact allowlist, never `*`. |
+| `FLASK_DEBUG` | `false` in production. |
 
-The site will be accessible at `https://your-name.onrender.com`.
+Render never receives the raw API keys. Production startup fails if either verifier is
+missing, if a verifier is not exactly 64 lowercase hexadecimal characters, or if both
+verifiers are identical. A malformed verifier is rejected even with `FLASK_DEBUG=true`.
+Enabling email alerts with incomplete email configuration also fails safely. Remove any
+legacy `IAQ_INGEST_API_KEY` / `IAQ_ADMIN_API_KEY` variables from Render: the backend
+ignores them.
 
-Note: the `.python-version` file forces Python 3.11.9 to avoid
-incompatibilities with Python 3.14.
+### 3.3 API key verifiers
+
+Authentication uses a verifier model:
+
+1. The ESP32 (ingestion) and the administrator (dashboard buttons) keep the **raw** key and
+   send it in the `X-API-KEY` header over HTTPS.
+2. The backend stores only `SHA-256(raw key)` as lowercase hexadecimal.
+3. For each request, the backend hashes the received header and compares the two digests
+   with `hmac.compare_digest()`.
+
+Sending the verifier itself as `X-API-KEY` fails with `401`, so reading the Render
+environment is not enough to authenticate. SHA-256 is appropriate here because the keys are
+long random secrets, not human passwords; do not reuse this model for low-entropy values.
+
+Derive a verifier locally without displaying or storing the raw key in shell history:
+
+```bash
+python -c "import getpass, hashlib; print(hashlib.sha256(getpass.getpass('Raw key: ').encode()).hexdigest())"
+```
+
+Paste the raw key at the hidden prompt and copy only the printed 64-character digest.
+Hash exactly the bytes the client sends: a trailing newline (for example from
+`echo key | sha256sum`) produces a different, unusable verifier.
 
 ---
 
-## 4. Full List of Server Functions (`app.py`)
+## 4. Server Security and API (`app.py`)
 
-### 4.1 Internal Functions
+### 4.1 Main internal boundaries
 
-| Function | Line | Role |
-|:---------|:-----|:-----|
-| `get_db()` | 92 | Opens an SQLite connection in the Flask context. |
-| `close_db()` | 99 | Closes the connection at the end of the request. |
-| `init_db()` | 106 | Creates the `mesures` and `alertes` tables with indexes. |
-| `cleanup_old_data()` | 136 | Deletes data older than 30 days, scheduled at 3:00 AM. |
-| `validate_sensor_value()` | 148 | Checks that a value is numeric and within the allowed range. |
-| `validate_measurement()` | 159 | Applies validation to all 5 sensor fields. |
-| `send_email_alert_async()` | 173 | Sends a Gmail alert email in the background using threading. |
-| `verifier_alertes()` | 200 | Compares each value with the thresholds, inserts into the database, triggers email. |
-| `require_api_key()` | 253 | Decorator: blocks requests without the `X-API-KEY` header. |
-| `_insert_single()` | 292 | Inserts a single measurement → `verifier_alertes()` → WebSocket. |
-| `_insert_batch()` | 320 | Inserts a batch, max 100 → `verifier_alertes()` → WebSocket. |
+| Function | Role |
+|:---------|:-----|
+| `validate_runtime_configuration()` | Rejects unsafe or incomplete production configuration. |
+| `validate_sensor_value()` | Rejects booleans, non-numbers, non-finite values and out-of-range readings. |
+| `validate_timestamp()` | Accepts only `YYYY-MM-DD HH:MM:SS`, or creates server time when absent. |
+| `send_email_alert_async()` | Sends validated STARTTLS email with bounded workers and per-sensor cooldown. |
+| `verifier_alertes()` | Stores threshold alerts and requests deduplicated email dispatch. |
+| `require_api_key()` | Hashes the raw `X-API-KEY` with SHA-256 and compares it in constant time with the role's verifier. |
+| `sanitize_csv_cell()` | Neutralizes formula-like text before CSV export. |
 
-### 4.2 API Routes
+### 4.2 API routes
 
 | Method | Address | Auth | Rate Limit | Description |
 |:-------|:--------|:-----|:-----------|:------------|
-| GET | `/` | — | — | HTML dashboard. |
-| GET | `/infos` | — | — | Educational sensor page. |
-| GET | `/api/health` | — | — | Health check (`{"statut":"ok"}`). |
-| POST | `/api/mesures` | API Key | 30/min | Receives data, single or batch. |
-| GET | `/api/data` | — | — | Paginated data, filterable by date. |
-| GET | `/api/stats` | — | — | Average, min, max per sensor. |
-| GET | `/api/alertes` | — | — | Alert history, filterable. |
-| GET | `/api/export` | — | — | CSV download, Excel compatible. |
-| POST | `/api/clear` | API Key | — | Deletes all data. |
-| POST | `/api/seed` | API Key | — | Generates 1440 test measurements (DEBUG only). |
+| GET | `/` | Public | Global | HTML dashboard. |
+| GET | `/infos` | Public | Global | Educational sensor page. |
+| GET | `/api/health` | Public | Global | Health check. |
+| POST | `/api/mesures` | Ingestion key | 30/min | Single or batch ingestion. |
+| GET | `/api/data` | Public | Global | Paginated measurements. |
+| GET | `/api/stats` | Public | Global | Aggregate sensor statistics. |
+| GET | `/api/alertes` | Public | Global | Alert history. |
+| GET | `/api/export` | Public | Global | Sanitized CSV download. |
+| POST | `/api/clear` | Admin key | Global | Deletes all data. |
+| POST | `/api/seed` | Admin key | Global | Generates test data; `FLASK_DEBUG=true` only. |
 
-### 4.3 Configurable Parameters
+Protected routes expect the raw key in `X-API-KEY`; it is verified against
+`IAQ_INGEST_API_KEY_SHA256` or `IAQ_ADMIN_API_KEY_SHA256` (section 3.3). Each key is
+accepted only by its own role.
 
-| Variable | Default Value | Description |
-|:---------|:--------------|:------------|
-| `DATABASE` | `os.environ.get("DB_PATH", "iaq.db")` | Database path (Render Disk compatible). |
-| `API_KEY` | `"REDACTED_OLD_API_KEY"` | Authentication key. |
-| `DEBUG` | `False` | Enables `/api/seed` and detailed logs. |
-| `DATA_RETENTION_DAYS` | `30` | Retention period in days. |
-| `SENSOR_OFFLINE_MINUTES` | `5` | "OFFLINE" delay on the dashboard. |
-| `EMAIL_ALERTS_ENABLED` | `True` | Enables or disables alert emails. |
-| `EMAIL_SENDER` | To be configured | Sender Gmail address. |
-| `EMAIL_PASSWORD` | To be configured | Google app password. |
-| `EMAIL_RECEIVER` | To be configured | Recipient address for alerts. |
+The read routes remain public because the current dashboard has no user-account system and
+loads them from the same Flask origin. CORS restrictions do **not** make these URLs private:
+an Internet deployment exposes its measurements and alert history to anyone who can reach it.
+Deploy privately or add a separately reviewed access-control layer if that data is sensitive.
 
-### 4.4 SQLite Database
+### 4.3 Configuration
+
+All private configuration comes from environment variables; `.env.example` is the canonical
+fake-only local template. There is no usable authentication-key default.
+
+| Variable | Default | Purpose |
+|:---------|:--------|:--------|
+| `IAQ_INGEST_API_KEY_SHA256` | None | Required SHA-256 verifier of the ingestion key (64 lowercase hex). |
+| `IAQ_ADMIN_API_KEY_SHA256` | None | Required, distinct SHA-256 verifier of the administrative key. |
+| `DB_PATH` | `iaq.db` | SQLite database path. |
+| `EMAIL_ALERTS_ENABLED` | `false` | Enables Gmail alerts only when explicitly configured. |
+| `EMAIL_SENDER` / `EMAIL_PASSWORD` / `EMAIL_RECEIVER` | None | Private email settings. |
+| `EMAIL_ALERT_COOLDOWN_SECONDS` | `900` | Minimum interval between emails for one sensor. |
+| `ALLOWED_ORIGINS` | Empty | Same-origin by default; optional comma-separated browser allowlist. |
+| `FLASK_DEBUG` | `false` | Enables the debug-only seed route. Never enable in production. |
+| `DEV_HOST` | `127.0.0.1` | Direct development-server bind address. |
+| `PORT` | `5000` | Direct development-server port. |
+
+Request bodies are limited to 64 KiB and ingestion batches to 100 records.
+
+### 4.4 SQLite database
 
 **`mesures` table:** id, timestamp, co2, tvoc, co, temperature, humidite
 
@@ -186,7 +226,7 @@ The fusion firmware combines the robustness of V2, namely watchdog, OTA, LittleF
 ArduinoJson, with 's improvements, namely dynamic `R0` calibration, correct
 CCS811 reading, I2C scan, sensitive thresholds, and a local state machine.
 
-### 5.1 Libraries (12)
+### 5.1 Libraries and local headers (14)
 
 | Library | Role |
 |:--------|:-----|
@@ -202,13 +242,15 @@ CCS811 reading, I2C scan, sensitive thresholds, and a local state machine.
 | `time.h` | NTP clock (UTC+1 Algeria, no DST). |
 | `LittleFS.h` | Non-volatile flash storage (offline buffer). |
 | `ArduinoOTA.h` | Firmware update over WiFi (OTA). |
+| `config_private.h` | Ignored local credentials generated from the fake example. |
+| `root_ca.h` | Public root certificate for server authentication. |
 
 ### 5.2 Functions
 
 | Function | Role |
 |:---------|:-----|
 | `scanI2C()` | Scans the I2C buses at startup (diagnostics). |
-| `setup()` | Init: LittleFS, WDT, 2x I2C, pins, WiFi, OTA, NTP, sensors. |
+| `setup()` | Init: LittleFS, WDT, 2x I2C, pins, WiFi, verified TLS, OTA, sensors. |
 | `loop()` | WDT → OTA → WiFi → 2s polling (sensors + alerts) → 5s sending. |
 | `mhzChecksum()` | UART checksum for the MH-Z19 protocol. |
 | `lireCO2()` | MH-Z19: cmd `0x86` → checksum → CO2 ppm. |
@@ -224,6 +266,7 @@ CCS811 reading, I2C scan, sensitive thresholds, and a local state machine.
 | `traiterAlertes()` | Parses server response → LEDs only (no buzzer). |
 | `gererWiFi()` | Non-blocking reconnection every 30s. |
 | `connecterWiFi()` | Initial connection (40 attempts, max 20s). |
+| `synchroniserHorlogeTLS()` | Waits for a valid NTP clock before allowing HTTPS. |
 
 ### 5.3 Key Differences Between Fusion and V2
 
@@ -242,32 +285,44 @@ CCS811 reading, I2C scan, sensitive thresholds, and a local state machine.
 
 ### 5.4 Built-in Safety Mechanisms
 
-- **Watchdog (15s)**: Restarts the ESP32 if the code gets stuck.
-- **I2C Timeout (1s)**: Prevents the I2C bus from blocking indefinitely.
-- **HTTPS**: Encrypted communication via `WiFiClientSecure` + `setInsecure()`.
-- **API Key**: `X-API-KEY` header on every POST request.
-- **LittleFS Buffer (50 KB)**: Non-volatile flash backup if the server is offline.
-  Sent to both servers when the connection returns.
-- **OTA**: Wireless update (password: `REDACTED_OTA_PASSWORD`).
-- **NTP**: Autonomous UTC+1 timestamping (Algeria, no DST).
-- **Cross-calibration**: `setEnvironmentalData(hum, temp)` improves CCS811 readings.
-- **NAN values**: Invalid fields are omitted from the JSON.
-- **Sensor validation**: Thresholds are checked only if the sensor is valid and calibrated.
-- **TVOC fallback**: Keeps the last valid value if CCS811 misses one cycle.
-- **Hysteresis**: Separate ON/OFF thresholds to prevent flickering.
+- **Verified HTTPS**: `WiFiClientSecure.setCACert()` validates the server certificate and
+  hostname against the public root CA bundle in `root_ca.h` (GTS Root R1/R4, currently used
+  by `*.onrender.com`, plus ISRG Root X1).
+- **NTP gate**: production HTTPS requests fail closed until the ESP32 clock is valid;
+  this is required for certificate expiry and hostname verification.
+- **Private configuration**: Wi-Fi, ingestion and OTA credentials come only from the
+  ignored `config_private.h` file.
+- **Watchdog (15s)** and **I2C timeout (1s)** limit hardware lockups.
+- **LittleFS buffer (50 KB)** preserves measurements while the primary server is offline.
+- **Cross-calibration**, finite sensor checks, TVOC fallback and hysteresis improve readings
+  and prevent rapid output switching.
 - **Local state machine**: IDLE → BUZZING 2s → FAN_ON → back to IDLE.
-  Local control only, `traiterAlertes()` no longer controls the buzzer.
-- **LEDs**: Disabled by default (`GPIO 25/26` not usable on WROOM-1).
 
-### 5.5 Parameters to Modify Before Uploading
+### 5.5 Private configuration before upload
 
-| Variable | Line | Current Value | What to Set |
-|:---------|:-----|:--------------|:------------|
-| `WIFI_SSID` | 25 | `"REDACTED_WIFI_SSID_B"` | The WiFi network name. |
-| `WIFI_PASSWORD` | 26 | `"REDACTED_WIFI_PASSWORD_B"` | The WiFi password. |
-| `SERVER_URL_1` | 29 | `"https://iaq-maison.onrender.com/api/mesures"` | Mahdi dashboard. |
-| `SERVER_URL_2` | 30 | `"https://iaq-backend.onrender.com/api/mesures"` |  backend. |
-| `HEALTH_URL_1` | 31 | `"https://iaq-maison.onrender.com/api/health"` | Server 1 health check. |
+Never edit credentials into a tracked `.ino` file.
+
+```bash
+cp esp32_iaq/config_private.example.h esp32_iaq/config_private.h
+```
+
+Edit only `esp32_iaq/config_private.h` and replace every `EXAMPLE_ONLY` placeholder.
+This ignored file supplies:
+
+- `IAQ_WIFI_SSID` and `IAQ_WIFI_PASSWORD`;
+- `IAQ_INGEST_API_KEY`, the raw ingestion key whose SHA-256 is the backend
+  `IAQ_INGEST_API_KEY_SHA256` (HTTPS firmwares only);
+- `IAQ_OTA_PASSWORD`;
+- `IAQ_LOCAL_INGEST_API_KEY` and the local URLs, used only by the archived V2 LAN firmware.
+
+The archived V2 sketch sends its key over plaintext HTTP, so it reads the separate
+`IAQ_LOCAL_INGEST_API_KEY` and never `IAQ_INGEST_API_KEY`. Give it a distinct local-only
+value, and configure its SHA-256 as `IAQ_INGEST_API_KEY_SHA256` only on the local test server.
+V2 refuses to compile if both keys are identical.
+
+The active fusion firmware keeps its public Render URLs in source. Public service URLs are
+not credentials. If a Render endpoint changes certificate authority, update the public CA
+bundle after validating the new chain before reflashing.
 
 ---
 
@@ -471,14 +526,21 @@ modify the `#define` values at the top of `esp32_iaq_v2.ino`.
   - `DHT sensor library` (by Adafruit)
   - `ArduinoJson` (by Benoit Blanchon)
 
+Tested toolchain: board package **`esp32:esp32` 2.0.17** and **ArduinoJson 6.21.x**.
+The current firmware does not compile with the ESP32 core 3.x API without source
+changes, and ArduinoJson 7 is not the tested major version; pin both versions in the
+Boards Manager and Library Manager.
+
 ### 10.2 Configuration
 
-1. Open `esp32_iaq/esp32_iaq_fusion.ino` in Arduino IDE.
-2. Modify `WIFI_SSID` and `WIFI_PASSWORD` (lines 25-26).
-3. Check the Render server URLs (lines 29-31).
-4. `Tools > Board Type`: `ESP32S3 Dev Module`.
-5. `Tools > Port`: choose the COM port, for example `COM3`.
-6. Click `Upload` (right arrow).
+1. Copy `config_private.example.h` to the ignored `config_private.h` file.
+2. Put the real Wi-Fi, ingestion-key and OTA values only in `config_private.h`.
+3. Confirm the backend `IAQ_INGEST_API_KEY_SHA256` is the SHA-256 of the device ingestion key.
+4. Open `esp32_iaq/esp32_iaq_fusion.ino` in Arduino IDE.
+5. Select `ESP32S3 Dev Module`, choose the serial port, then upload.
+
+Do not rename the example over the private file and do not use `git add -f` on
+`config_private.h`. Compilation intentionally fails when the private header is absent.
 
 ### 10.3 Verification
 
@@ -492,11 +554,12 @@ Open the Serial Monitor (115200 baud). The ESP32 should display:
 
 ### 10.4 OTA Updates (Without Cable)
 
-After the first upload via USB, the following updates
-can be done over WiFi:
-1. In Arduino IDE: `Tools > Port > choose esp32-salon` (network).
-2. Enter the OTA password: `REDACTED_OTA_PASSWORD`.
-3. Upload normally.
+OTA remains enabled in the fusion and archived V2 sketches. Its password is read from
+`IAQ_OTA_PASSWORD` in the ignored `config_private.h`; there is no usable default.
+
+After the first USB upload, select the configured OTA hostname in Arduino IDE and upload
+normally while the device is on the same trusted network. Rotate the previously exposed OTA
+password before reflashing and never place the replacement in source or documentation.
 
 ---
 
@@ -507,14 +570,15 @@ the **"ALERT"** level, not the "Warning" level.
 
 ### 11.1 Gmail Configuration
 
-1. Create a Gmail account dedicated to the system, for example `your-iaq-project@gmail.com`.
-2. Enable two-factor authentication on this account.
-3. Generate an **App Password**:
-   `https://myaccount.google.com/apppasswords`
-4. Edit `app.py` (lines 48-51):
-   - `EMAIL_SENDER` = the bot Gmail address.
-   - `EMAIL_PASSWORD` = the app password (16 characters).
-   - `EMAIL_RECEIVER` = your personal address.
+1. Use a dedicated Gmail account with two-factor authentication.
+2. Create an application password in the Google account settings.
+3. Store it only in `.env` for local development or in Render environment variables.
+4. Set `EMAIL_SENDER`, `EMAIL_PASSWORD`, `EMAIL_RECEIVER`, then set
+   `EMAIL_ALERTS_ENABLED=true`.
+
+Email is disabled by default. STARTTLS uses the platform trust store with hostname and
+certificate validation. A per-sensor cooldown (default: 15 minutes) and two-worker limit
+prevent a measurement batch from creating an unbounded number of SMTP threads.
 
 ### 11.2 Format of the Received Email
 
@@ -545,16 +609,27 @@ The CO calculation in ppm follows these steps:
 
 ## 13. Security
 
-| Point | Status | Detail |
-|:------|:-------|:-------|
-| API Key | Active | `X-API-KEY` header required for POST. |
-| HTTPS | Active | `WiFiClientSecure` + `setInsecure`. |
-| Rate Limiting | Active | `30/min` POST, `200/min` global. |
-| Data Validation | Active | Numeric ranges checked. |
-| Compression | Active | Gzip/Brotli via `Flask-Compress`. |
-| WebSocket | Active | `Socket.IO` pushes updates. |
-| Automatic DB Cleanup | Active | Every day at 3:00 AM (`APScheduler`). |
-| Email Alerts | Active | Gmail via `smtplib` + threading. |
+| Control | Status | Detail |
+|:--------|:-------|:-------|
+| Backend secrets | Environment only | Ingestion, administration and email values are absent from tracked source. |
+| API keys at rest | SHA-256 verifiers | The backend stores only `IAQ_INGEST_API_KEY_SHA256` / `IAQ_ADMIN_API_KEY_SHA256`; clients keep the raw keys, and a verifier sent as `X-API-KEY` is rejected. |
+| Role separation | Active | Device ingestion and destructive administration require distinct keys. |
+| HTTPS firmware | Verified | Fusion and Nini validate the server chain and hostname with the `root_ca.h` bundle after NTP sync. |
+| Archived V2 transport | Plaintext LAN only | Uses HTTP intentionally for local reference with the separate `IAQ_LOCAL_INGEST_API_KEY`; never use it over the Internet or with a production key. |
+| OTA | Private config | Password comes from ignored `config_private.h`, with no default. |
+| Input validation | Active | Strict timestamps, finite numbers, physical ranges, 64 KiB bodies and 100-row batches. |
+| Browser rendering | Safe DOM APIs | Alert values are inserted with `textContent`; severity classes are allowlisted. |
+| CSV export | Neutralized | Formula-triggering string cells are prefixed before export. |
+| CORS / Socket.IO | Same-origin by default | Optional exact origins use `ALLOWED_ORIGINS`; wildcard is rejected. |
+| SMTP | Verified STARTTLS | Default trust store validates the Gmail certificate and hostname. |
+| Alert resource control | Bounded | Per-sensor cooldown plus at most two simultaneous email workers. |
+
+Important privacy note: the read APIs remain unauthenticated for the current public dashboard
+architecture. Same-origin rules limit browser embedding but do not prevent direct requests.
+
+Historical commits still contain previously exposed credentials. Removing them from current
+files does not revoke them or erase Git history; rotation and a reviewed history rewrite are
+separate mandatory manual phases.
 
 ---
 

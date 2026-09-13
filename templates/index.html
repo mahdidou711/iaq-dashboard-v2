@@ -770,13 +770,28 @@ async function loadAlertes() {
     return;
   }
 
-  list.innerHTML = data.map(a =>
-    '<div class="alert-item">' +
-      '<span class="alert-dot ' + a.niveau + '"></span>' +
-      '<span class="alert-time">' + a.timestamp + '</span>' +
-      '<span class="alert-msg">' + a.message + '</span>' +
-    '</div>'
-  ).join('');
+  list.replaceChildren();
+  data.forEach(a => {
+    const item = document.createElement('div');
+    item.className = 'alert-item';
+
+    const dot = document.createElement('span');
+    dot.className = 'alert-dot';
+    if (a.niveau === 'warn' || a.niveau === 'alert') {
+      dot.classList.add(a.niveau);
+    }
+
+    const timestamp = document.createElement('span');
+    timestamp.className = 'alert-time';
+    timestamp.textContent = String(a.timestamp ?? '');
+
+    const message = document.createElement('span');
+    message.className = 'alert-msg';
+    message.textContent = String(a.message ?? '');
+
+    item.append(dot, timestamp, message);
+    list.appendChild(item);
+  });
 }
 
 document.getElementById('btn-alertes').addEventListener('click', loadAlertes);

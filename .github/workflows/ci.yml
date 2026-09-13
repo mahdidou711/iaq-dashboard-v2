@@ -5,9 +5,19 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   syntax-check:
     runs-on: ubuntu-latest
+    env:
+      # Fake SHA-256 verifiers with no known preimage; the tests define their own keys.
+      IAQ_INGEST_API_KEY_SHA256: "0000000000000000000000000000000000000000000000000000000000000000"
+      IAQ_ADMIN_API_KEY_SHA256: "1111111111111111111111111111111111111111111111111111111111111111"
+      EMAIL_ALERTS_ENABLED: "false"
+      DB_PATH: /tmp/iaq-ci.db
+      FLASK_DEBUG: "true"
 
     steps:
       - name: Checkout repository
@@ -21,8 +31,40 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install -r requirements.txt
 
       - name: Check Python syntax
         run: |
-          python -m py_compile app.py
+          python -m compileall -q app.py tests
+
+      - name: Run backend security regression tests
+        run: |
+          python -m unittest discover -s tests -v
+
+      - name: Check repository security hygiene
+        shell: bash
+        run: |
+          if git ls-files | grep -E '(^|/)\.env($|\.)|(^|/)config_private\.h$|(^|/)secrets\.h$' | grep -v -E '(^|/)\.env\.example$'; then
+            echo "A private configuration file is tracked."
+            exit 1
+          fi
+          if git check-ignore --no-index .env.example >/dev/null 2>&1; then
+            echo ".env.example must remain trackable."
+            exit 1
+          fi
+          if git check-ignore --no-index esp32_iaq/config_private.example.h >/dev/null 2>&1; then
+            echo "config_private.example.h must remain trackable."
+            exit 1
+          fi
+          if grep -R -n -E 'setInsecure[[:space:]]*\(' esp32_iaq --include='*.ino'; then
+            echo "Insecure ESP32 TLS configuration found."
+            exit 1
+          fi
+          if grep -R -n -E 'ArduinoOTA\.setPassword[[:space:]]*\([[:space:]]*"' esp32_iaq --include='*.ino'; then
+            echo "Hard-coded OTA password found."
+            exit 1
+          fi
+          if grep -n -E '=[[:space:]]*IAQ_INGEST_API_KEY[[:space:]]*;' esp32_iaq/esp32_iaq_v2.ino; then
+            echo "Plaintext HTTP V2 firmware must use IAQ_LOCAL_INGEST_API_KEY, never the production key."
+            exit 1
+          fi
